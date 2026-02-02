@@ -1,0 +1,12 @@
+fastmcp
+pydantic>=2.0
+python-dotenv
+aiofiles>=23.0
+pyyaml>=6.0
+pillow>=10.0
+aiosqlite>=0.19.0
+
+# Development dependencies
+pytest>=7.0
+pytest-asyncio>=0.21
+pytest-mock>=3.10
