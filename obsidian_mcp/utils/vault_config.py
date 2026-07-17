@@ -38,14 +38,20 @@ def normalize_vault_relative_path(raw: str, vault_path: Path) -> Optional[str]:
     text = raw.replace("\\", "/").strip()
     if text in ("", "."):
         return ""
-    text = text.strip("/")
-    if text == "":
-        return ""
 
+    # Absoluteness (and "~") must be checked on the un-stripped text: a
+    # leading "/" is what makes a POSIX path absolute in the first place
+    # (e.g. "/Users/x/vaults/v/01-projects", straight from spec section 2's
+    # own example). Stripping slashes first — as this used to do — silently
+    # turns a real absolute path into a bogus vault-relative one instead of
+    # resolving it and checking vault membership.
     candidate = Path(text)
     if candidate.is_absolute() or text.startswith("~"):
         resolved = Path(text).expanduser().resolve()
     else:
+        text = text.strip("/")
+        if text == "":
+            return ""
         # Detect and strip a leading "<vault-basename>/" prefix, e.g.
         # "brain-swapo/01-projects" when the vault itself is ".../brain-swapo".
         parts = PurePosixPath(text).parts
