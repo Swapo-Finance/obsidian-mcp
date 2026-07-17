@@ -100,6 +100,21 @@ class ObsidianVault:
         self.append_headroom_lines = self._read_int_env("OBSIDIAN_APPEND_HEADROOM_LINES", 100)
         self.cache_stat_ttl_seconds = self._read_int_env("OBSIDIAN_CACHE_STAT_TTL_SECONDS", 30)
 
+        # Opinionated by default (spec section 10.3): create_note and
+        # update_note(replace/create_if_not_exists) require a `description`
+        # in frontmatter and force `name` to match the filename, unless this
+        # is explicitly turned off.
+        self.require_frontmatter = self._read_bool_env("OBSIDIAN_REQUIRE_FRONTMATTER", True)
+
+        # Search index mode (spec section 10.4): content (today's behavior),
+        # index (lightweight {path, name, description, score, match_type}
+        # from the cache), or auto (index once a search's result count beats
+        # the threshold below).
+        self.search_result_mode = self._read_choice_env(
+            "OBSIDIAN_SEARCH_RESULT_MODE", ("content", "index", "auto"), "auto"
+        )
+        self.search_index_threshold = self._read_int_env("OBSIDIAN_SEARCH_INDEX_THRESHOLD", 10)
+
         daily_dir_raw = os.getenv("OBSIDIAN_DAILY_DIR", "daily")
         normalized_daily = normalize_vault_relative_path(daily_dir_raw, self.vault_path)
         if normalized_daily is None:
@@ -136,15 +151,29 @@ class ObsidianVault:
         return value
 
     @staticmethod
+    def _read_bool_env(name: str, default: bool) -> bool:
+        """Read a bool-valued env var (true/1/yes/on, case-insensitive,
+        surrounding whitespace ignored); anything else (including unset)
+        falls back to `default` — same truthy convention already used for
+        OBSIDIAN_AUTO_INDEX_UPDATE, just factored out for reuse."""
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in ("true", "1", "yes", "on")
+
+    @staticmethod
     def _read_int_env(name: str, default: int) -> int:
         """Read an int-valued env var; fall back to `default` (with a
-        warning) if set but not a valid integer — config never crashes
+        warning) if unset, blank, or not a valid integer after stripping
+        surrounding whitespace (env vars are always strings — ".strip()"
+        makes " 500 " coerce the same as "500") — config never crashes
         the boot."""
         raw = os.getenv(name)
         if raw is None:
             return default
+        stripped = raw.strip()
         try:
-            return int(raw)
+            return int(stripped)
         except ValueError:
             logger.warning(
                 "Invalid %s=%r; must be an integer. Falling back to %d.",
