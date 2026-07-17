@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import unicodedata
 from typing import Optional, List, Dict, Any
 from fastmcp import Context
 from ..utils.filesystem import get_vault
@@ -441,7 +442,11 @@ async def edit_note_section(
             line_text = line_match.group(2).strip()
             
             # Found our section
-            if line_text.lower() == heading_text.lower() and line_level == heading_level:
+            if (
+                unicodedata.normalize("NFC", line_text.lower())
+                == unicodedata.normalize("NFC", heading_text.lower())
+                and line_level == heading_level
+            ):
                 section_start = i
                 
                 # Find where this section ends (next heading of same or higher level, or end of file)
