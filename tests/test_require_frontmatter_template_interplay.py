@@ -27,6 +27,7 @@ import pytest_asyncio
 
 from obsidian_mcp.tools.note_management import create_note, read_note
 from obsidian_mcp.utils.filesystem import init_vault
+from obsidian_mcp.utils.vault_config import build_template_info
 
 
 @pytest_asyncio.fixture
@@ -184,6 +185,66 @@ class TestRequireFrontmatterOffTemplateStillEnforced:
                 "01-projects/Good.md", "---\nstatus: active\n---\n\n## Objetivo\n"
             )
             assert result["success"] is True
+        finally:
+            os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)
+            os.environ.pop("OBSIDIAN_FOLDER_TEMPLATES", None)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class TestRequiredFrontmatterKeysAlwaysListDescription:
+    """build_template_info's required_frontmatter_keys must surface
+    'description' whenever OBSIDIAN_REQUIRE_FRONTMATTER is on, even when no
+    folder template declares it (or no folder template applies at all) —
+    otherwise a caller that trusts this list for a single-pass compliant
+    write clears template conformance only to hit a second, avoidable error
+    from apply_frontmatter_requirements."""
+
+    @pytest.mark.asyncio
+    async def test_template_without_description_still_lists_it(
+        self, vault_template_without_name_description
+    ):
+        info = build_template_info(vault_template_without_name_description, "01-projects")
+        assert info["enforced"] is True
+        assert "description" in info["required_frontmatter_keys"]
+        assert "status" in info["required_frontmatter_keys"]
+
+    @pytest.mark.asyncio
+    async def test_template_already_declaring_description_not_duplicated(
+        self, vault_template_with_name_description
+    ):
+        info = build_template_info(vault_template_with_name_description, "01-projects")
+        assert info["required_frontmatter_keys"].count("description") == 1
+
+    @pytest.mark.asyncio
+    async def test_no_template_rule_at_all_still_lists_description(self):
+        temp_dir = tempfile.mkdtemp(prefix="obsidian_reqfm_notmpl_")
+        try:
+            os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "true"
+            os.environ.pop("OBSIDIAN_FOLDER_TEMPLATES", None)
+            vault = init_vault(temp_dir)
+            info = build_template_info(vault, "02-areas")
+            assert info["enforced"] is False
+            assert info["required_frontmatter_keys"] == ["description"]
+        finally:
+            os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_require_frontmatter_off_never_adds_description(self):
+        temp_dir = tempfile.mkdtemp(prefix="obsidian_reqfm_off_notmpl_")
+        try:
+            templates_dir = Path(temp_dir) / "templates"
+            templates_dir.mkdir()
+            (templates_dir / "projeto.md").write_text("---\nstatus: \n---\n\n## Objetivo\n")
+            (Path(temp_dir) / "01-projects").mkdir()
+
+            os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"
+            os.environ["OBSIDIAN_FOLDER_TEMPLATES"] = (
+                '[{"folder":"01-projects","template":"templates/projeto.md"}]'
+            )
+            vault = init_vault(temp_dir)
+            info = build_template_info(vault, "01-projects")
+            assert info["required_frontmatter_keys"] == ["status"]
         finally:
             os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)
             os.environ.pop("OBSIDIAN_FOLDER_TEMPLATES", None)

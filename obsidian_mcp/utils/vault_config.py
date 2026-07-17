@@ -211,7 +211,26 @@ def build_template_info(vault, note_dir: str) -> Dict[str, Any]:
     is returned as-is by get_note_template_tool, and is embedded in
     template-conformance violation errors so the LLM can retry with the
     exact skeleton it needs.
+
+    `required_frontmatter_keys` always folds in "description" when
+    vault.require_frontmatter is on: that vault-wide contract (spec section
+    10.3) applies to every write independent of whether a folder template
+    even matches, so omitting it here — as this used to — left the caller to
+    discover it the hard way, via a second, avoidable error from
+    apply_frontmatter_requirements after already clearing this check. This
+    folding is informational only: check_template_conformance's own
+    pass/fail gate deliberately keeps using `template_frontmatter_keys`
+    (the template's own declared keys, un-unioned) below, so a missing
+    "description" alone still surfaces as apply_frontmatter_requirements's
+    value-quality error, not a template-conformance one — the two stay
+    separate, composable gates (spec section 10.3's "template-aware, sem
+    duplicar" bullet), only the LLM-facing summary is unioned so the caller
+    sees the full contract in one pass. "name" is deliberately never added
+    to either list this way: it's always auto-injected from the filename
+    (see `instructions`), never something the caller needs to supply.
     """
+    always_required = ["description"] if vault.require_frontmatter else []
+
     rule = find_template_rule(note_dir, vault.folder_templates)
     if rule is None:
         return {
@@ -219,7 +238,8 @@ def build_template_info(vault, note_dir: str) -> Dict[str, Any]:
             "folder_rule": None,
             "template_path": None,
             "required_headings": [],
-            "required_frontmatter_keys": [],
+            "required_frontmatter_keys": always_required,
+            "template_frontmatter_keys": [],
             "skeleton": None,
             "instructions": "No template is configured for this folder; free-form content is fine.",
         }
@@ -228,18 +248,22 @@ def build_template_info(vault, note_dir: str) -> Dict[str, Any]:
     headings = extract_required_headings(skeleton)
     frontmatter, _ = vault._parse_frontmatter(skeleton)
     frontmatter_keys = list(frontmatter.keys())
+    required_frontmatter_keys = always_required + [k for k in frontmatter_keys if k not in always_required]
 
     return {
         "enforced": True,
         "folder_rule": rule.folder,
         "template_path": rule.template_display,
         "required_headings": headings,
-        "required_frontmatter_keys": frontmatter_keys,
+        "required_frontmatter_keys": required_frontmatter_keys,
+        "template_frontmatter_keys": frontmatter_keys,
         "skeleton": skeleton,
         "instructions": (
             f"Notes under '{rule.folder}' must include every required heading below, in the "
             "same relative order (extra headings are allowed anywhere), plus every required "
-            "frontmatter key (values are free). Use the skeleton as your starting point."
+            "frontmatter key (values are free). 'name' is auto-injected from the filename — "
+            "never supply it yourself, even if it's listed above. Use the skeleton as your "
+            "starting point."
         ),
     }
 
@@ -268,7 +292,10 @@ def check_template_conformance(vault, relpath: str, content: str) -> None:
 
     frontmatter, _ = vault._parse_frontmatter(content)
     frontmatter_keys = set(frontmatter.keys())
-    missing_frontmatter_keys = [k for k in info["required_frontmatter_keys"] if k not in frontmatter_keys]
+    # Template-declared keys only (NOT the unioned info["required_frontmatter_keys"]):
+    # a missing "description" alone must stay apply_frontmatter_requirements's
+    # error to raise, not this function's — see build_template_info's docstring.
+    missing_frontmatter_keys = [k for k in info["template_frontmatter_keys"] if k not in frontmatter_keys]
 
     if not missing and not out_of_order and not missing_frontmatter_keys:
         return
