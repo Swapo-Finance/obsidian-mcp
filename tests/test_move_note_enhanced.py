@@ -81,7 +81,7 @@ async def test_move_note_with_rename(mock_get_vault):
     )
     
     # Mock get_backlinks
-    with patch('obsidian_mcp.tools.organization.get_backlinks') as mock_backlinks:
+    with patch('obsidian_mcp.tools.link_management.get_backlinks') as mock_backlinks:
         mock_backlinks.return_value = {
             'findings': [
                 {'source_path': 'Daily/2024-01-15.md', 'link_text': 'Old Name', 'link_type': 'wiki'},
@@ -157,7 +157,7 @@ async def test_move_note_with_rename_links_disabled(mock_get_vault):
     assert result["details"]["notes_updated"] == 0
     
     # Should not have called get_backlinks
-    with patch('obsidian_mcp.tools.organization.get_backlinks') as mock_backlinks:
+    with patch('obsidian_mcp.tools.link_management.get_backlinks') as mock_backlinks:
         mock_backlinks.assert_not_called()
 
 
@@ -178,7 +178,7 @@ async def test_move_note_preserve_aliases(mock_get_vault):
         metadata=NoteMetadata()
     )
     
-    with patch('obsidian_mcp.tools.organization.get_backlinks') as mock_backlinks:
+    with patch('obsidian_mcp.tools.link_management.get_backlinks') as mock_backlinks:
         mock_backlinks.return_value = {
             'findings': [
                 {'source_path': 'Index.md', 'link_text': 'User Friendly Display', 'link_type': 'wiki'}
@@ -219,7 +219,7 @@ async def test_move_note_complex_path_changes(mock_get_vault):
         metadata=NoteMetadata()
     )
     
-    with patch('obsidian_mcp.tools.organization.get_backlinks') as mock_backlinks:
+    with patch('obsidian_mcp.tools.link_management.get_backlinks') as mock_backlinks:
         mock_backlinks.return_value = {
             'findings': [
                 {'source_path': 'Daily/2024-01-15.md', 'link_text': 'Sprint Planning', 'link_type': 'wiki'}
@@ -260,7 +260,7 @@ async def test_move_note_same_name_different_folder(mock_get_vault):
     vault.delete_note.return_value = None
     
     # Should not call get_backlinks since name didn't change
-    with patch('obsidian_mcp.tools.organization.get_backlinks') as mock_backlinks:
+    with patch('obsidian_mcp.tools.link_management.get_backlinks') as mock_backlinks:
         result = await move_note(
             "Inbox/Project.md",
             "Projects/Active/Project.md"

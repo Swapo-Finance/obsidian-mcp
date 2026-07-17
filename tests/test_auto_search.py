@@ -36,7 +36,7 @@ async def test_rename_note_auto_search_single_match(mock_get_vault):
     )
     
     # Mock search_notes to return single result
-    with patch('obsidian_mcp.tools.organization.search_notes') as mock_search:
+    with patch('obsidian_mcp.tools.search_discovery.search_notes') as mock_search:
         mock_search.return_value = {
             "results": [{"path": "Projects/My Note.md"}],
             "count": 1
@@ -72,7 +72,7 @@ async def test_rename_note_auto_search_multiple_matches(mock_get_vault):
     vault = mock_get_vault
     
     # Mock search_notes to return multiple results
-    with patch('obsidian_mcp.tools.organization.search_notes') as mock_search:
+    with patch('obsidian_mcp.tools.search_discovery.search_notes') as mock_search:
         mock_search.return_value = {
             "results": [
                 {"path": "Projects/My Note.md"},
@@ -101,7 +101,7 @@ async def test_rename_note_auto_search_no_matches(mock_get_vault):
     vault = mock_get_vault
     
     # Mock search_notes to return no results
-    with patch('obsidian_mcp.tools.organization.search_notes') as mock_search:
+    with patch('obsidian_mcp.tools.search_discovery.search_notes') as mock_search:
         mock_search.return_value = {
             "results": [],
             "count": 0
@@ -129,7 +129,7 @@ async def test_move_note_auto_search_single_match(mock_get_vault):
     )
     
     # Mock search_notes
-    with patch('obsidian_mcp.tools.organization.search_notes') as mock_search:
+    with patch('obsidian_mcp.tools.search_discovery.search_notes') as mock_search:
         mock_search.return_value = {
             "results": [{"path": "Inbox/Todo.md"}],
             "count": 1
@@ -177,8 +177,8 @@ async def test_move_note_auto_search_with_rename(mock_get_vault):
     )
     
     # Mock search_notes and get_backlinks
-    with patch('obsidian_mcp.tools.organization.search_notes') as mock_search:
-        with patch('obsidian_mcp.tools.organization.get_backlinks') as mock_backlinks:
+    with patch('obsidian_mcp.tools.search_discovery.search_notes') as mock_search:
+        with patch('obsidian_mcp.tools.link_management.get_backlinks') as mock_backlinks:
             mock_search.return_value = {
                 "results": [{"path": "Inbox/Draft.md"}],
                 "count": 1
@@ -225,7 +225,7 @@ async def test_auto_search_preserves_directory_context(mock_get_vault):
         metadata=NoteMetadata()
     )
     
-    with patch('obsidian_mcp.tools.organization.search_notes') as mock_search:
+    with patch('obsidian_mcp.tools.search_discovery.search_notes') as mock_search:
         mock_search.return_value = {
             "results": [{"path": "Projects/2024/Q1/Sprint Planning.md"}],
             "count": 1
@@ -262,7 +262,7 @@ async def test_auto_search_with_context_logging(mock_get_vault):
         metadata=NoteMetadata()
     )
     
-    with patch('obsidian_mcp.tools.organization.search_notes') as mock_search:
+    with patch('obsidian_mcp.tools.search_discovery.search_notes') as mock_search:
         mock_search.return_value = {
             "results": [{"path": "Daily/2024-01-15.md"}],
             "count": 1

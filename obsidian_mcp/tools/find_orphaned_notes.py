@@ -69,21 +69,26 @@ async def find_orphaned_notes(
             
             # Check age if threshold is set
             if date_threshold and note.metadata.modified:
-                # Handle both timezone-aware and naive datetime strings
-                mod_str = note.metadata.modified
-                if mod_str.endswith('Z'):
-                    mod_str = mod_str[:-1] + '+00:00'
-                try:
-                    # Try to parse with timezone
-                    mod_time = datetime.fromisoformat(mod_str)
-                except ValueError:
-                    # If that fails, parse as naive and assume local timezone
-                    mod_time = datetime.fromisoformat(mod_str.split('+')[0].split('.')[0])
-                
-                # Make date_threshold timezone-naive for comparison
+                mod_value = note.metadata.modified
+                # NoteMetadata.modified is a datetime, but be defensive about
+                # ISO-8601 strings (timezone-aware or naive) as well.
+                if isinstance(mod_value, datetime):
+                    mod_time = mod_value
+                else:
+                    mod_str = str(mod_value)
+                    if mod_str.endswith('Z'):
+                        mod_str = mod_str[:-1] + '+00:00'
+                    try:
+                        # Try to parse with timezone
+                        mod_time = datetime.fromisoformat(mod_str)
+                    except ValueError:
+                        # If that fails, parse as naive and assume local timezone
+                        mod_time = datetime.fromisoformat(mod_str.split('+')[0].split('.')[0])
+
+                # Make date comparison timezone-naive
                 if mod_time.tzinfo is not None:
                     mod_time = mod_time.replace(tzinfo=None)
-                
+
                 if mod_time > date_threshold:
                     continue  # Skip recent notes
             
@@ -94,7 +99,7 @@ async def find_orphaned_notes(
             if orphan_type == "no_backlinks":
                 # Get backlinks for this note
                 backlinks_result = await get_backlinks(path)
-                backlinks = backlinks_result.get("backlinks", [])
+                backlinks = backlinks_result.get("findings", [])
                 if not backlinks or len(backlinks) == 0:
                     is_orphaned = True
                     orphan_reason = "No incoming links"
@@ -102,9 +107,9 @@ async def find_orphaned_notes(
             elif orphan_type == "no_links":
                 # Check both incoming and outgoing links
                 backlinks_result = await get_backlinks(path)
-                backlinks = backlinks_result.get("backlinks", [])
+                backlinks = backlinks_result.get("findings", [])
                 outgoing_result = await get_outgoing_links(path)
-                outgoing = outgoing_result.get("outgoing_links", [])
+                outgoing = outgoing_result.get("findings", [])
                 if (not backlinks or len(backlinks) == 0) and (not outgoing or len(outgoing) == 0):
                     is_orphaned = True
                     orphan_reason = "No incoming or outgoing links"
@@ -128,9 +133,9 @@ async def find_orphaned_notes(
             elif orphan_type == "isolated":
                 # Multiple criteria: no links AND no tags
                 backlinks_result = await get_backlinks(path)
-                backlinks = backlinks_result.get("backlinks", [])
+                backlinks = backlinks_result.get("findings", [])
                 outgoing_result = await get_outgoing_links(path)
-                outgoing = outgoing_result.get("outgoing_links", [])
+                outgoing = outgoing_result.get("findings", [])
                 has_no_links = (not backlinks or len(backlinks) == 0) and (not outgoing or len(outgoing) == 0)
                 has_no_tags = not note.metadata.tags or len(note.metadata.tags) == 0
                 

@@ -29,14 +29,22 @@ class ObsidianVault:
         Args:
             vault_path: Path to vault. If not provided, uses OBSIDIAN_VAULT_PATH env var.
         """
-        self.vault_path = Path(vault_path or os.getenv("OBSIDIAN_VAULT_PATH", ""))
-        
-        if not self.vault_path:
+        raw_vault_path = vault_path or os.getenv("OBSIDIAN_VAULT_PATH", "")
+
+        if not raw_vault_path:
             raise ValueError(
                 "Vault path not provided. Set OBSIDIAN_VAULT_PATH environment variable "
                 "or pass vault_path parameter."
             )
-        
+
+        # Resolve to an absolute path so all downstream glob / search-index /
+        # relative_to operations are independent of the process CWD. A relative
+        # OBSIDIAN_VAULT_PATH (e.g. "./brain-swapo") otherwise makes list_notes
+        # and the persistent index depend on where the server was launched,
+        # silently returning empty results when the CWD differs from the vault's
+        # parent. Config stays portable (relative); the server resolves it once.
+        self.vault_path = Path(raw_vault_path).expanduser().resolve()
+
         if not self.vault_path.exists():
             raise ValueError(f"Vault path does not exist: {self.vault_path}")
         
@@ -62,7 +70,20 @@ class ObsidianVault:
         self._index_update_interval = int(os.getenv("OBSIDIAN_INDEX_UPDATE_INTERVAL", "300"))  # 5 minutes default
         self._index_batch_size = int(os.getenv("OBSIDIAN_INDEX_BATCH_SIZE", "50"))
         self._auto_index_update = os.getenv("OBSIDIAN_AUTO_INDEX_UPDATE", "true").lower() in ("true", "1", "yes", "on")
-    
+
+        # Serialize note mutations to prevent lost updates when concurrent
+        # read-modify-write operations target the same note (e.g. two
+        # edit_note_section calls dispatched in one batch). asyncio.Lock — the
+        # server is a single-process async app, so this is the right primitive
+        # (not fcntl, which is for cross-process locking).
+        # ponytail: global lock; make it per-path if write throughput matters.
+        self._write_lock = asyncio.Lock()
+
+    @property
+    def write_lock(self) -> asyncio.Lock:
+        """Global note-mutation lock. Acquire around any read-modify-write."""
+        return self._write_lock
+
     def _ensure_safe_path(self, path: str) -> Path:
         """
         Ensure the path is safe and within the vault.
@@ -567,7 +588,7 @@ class ObsidianVault:
         else:
             return obj
     
-    async def search_notes(self, query: str, context_length: int = 100, max_results: int = 50) -> List[Dict[str, Any]]:
+    async def search_notes(self, query: str, context_length: int = 20, max_results: int = 50) -> List[Dict[str, Any]]:
         """
         Search for notes containing query text using indexed search.
         
@@ -676,7 +697,7 @@ class ObsidianVault:
         return results
     
     
-    async def search_by_regex(self, pattern: str, flags: int = 0, context_length: int = 100, max_results: int = 50) -> List[Dict[str, Any]]:
+    async def search_by_regex(self, pattern: str, flags: int = 0, context_length: int = 20, max_results: int = 50) -> List[Dict[str, Any]]:
         """
         Search for notes matching a regular expression pattern.
         
