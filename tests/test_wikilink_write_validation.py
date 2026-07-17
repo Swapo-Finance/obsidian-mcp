@@ -221,6 +221,27 @@ class TestKebabAwareWikilinkResolution:
         assert "[[Café Especial|Cafe Especial]]" in note["details"]["content"]
 
     @pytest.mark.asyncio
+    async def test_same_text_inside_fenced_code_block_is_not_rewritten(self, make_vault):
+        # Regression: the rewrite used to run content.replace(old, new)
+        # globally, so a fenced code block that happens to contain the same
+        # "[[Cafe Especial]]" text as sample syntax (not a real link) also
+        # got rewritten there, corrupting the code block. Only the real,
+        # unmasked wikilink occurrence may be touched.
+        vault = make_vault(policy="strict", slug_style="kebab")
+        (vault.vault_path / "Café Especial.md").write_text("# Café Especial\n")
+
+        content = (
+            "See [[Cafe Especial]] for details.\n\n"
+            "```\n[[Cafe Especial]]\n```\n"
+        )
+        result = await create_note("Note.md", content)
+        assert result["success"] is True
+
+        written = (await read_note("Note.md"))["details"]["content"]
+        assert "[[Café Especial|Cafe Especial]]" in written
+        assert "```\n[[Cafe Especial]]\n```" in written
+
+    @pytest.mark.asyncio
     async def test_non_kebab_matching_target_still_reports_broken(self, make_vault):
         vault = make_vault(policy="strict", slug_style="kebab")
         (vault.vault_path / "Café Especial.md").write_text("# Café Especial\n")

@@ -598,7 +598,15 @@ async def validate_wikilinks_for_write(vault, content: str) -> Tuple[str, List[s
     notes_index = await build_vault_notes_index(vault)
     warnings: List[str] = []
     broken_targets: List[str] = []
-    replacements: Dict[str, str] = {}  # raw "[[...]]" text -> replacement text
+    # (start, end, replacement) spans into `content` — NOT a raw-text ->
+    # replacement dict. `masked` is length/position-aligned with `content`
+    # (see _mask_ineligible_regions), so match.start()/end() from the masked
+    # text are valid offsets into content too. Rewriting by position (below)
+    # instead of str.replace(old, new) is required: a str.replace would
+    # rewrite every literal occurrence of "[[Nota]]" in content, including
+    # ones inside a fenced/inline code block that only happen to contain the
+    # same text as a real link elsewhere in the note.
+    replacements: List[Tuple[int, int, str]] = []
 
     for match in matches:
         raw_inner = match.group(1)
@@ -635,15 +643,17 @@ async def validate_wikilinks_for_write(vault, content: str) -> Tuple[str, List[s
                         resolved_path = real_path
                         display = alias.strip() if alias else target_part.strip()
                         real_stem = Path(real_path).stem
-                        replacements[match.group(0)] = f"[[{real_stem}|{display}]]"
+                        replacements.append((match.start(), match.end(), f"[[{real_stem}|{display}]]"))
                         break
 
         if not resolved_path:
             broken_targets.append(note_ref)
 
+    # Right-to-left so earlier spans stay valid as later (higher-offset)
+    # ones are rewritten first.
     new_content = content
-    for old, new in replacements.items():
-        new_content = new_content.replace(old, new)
+    for start, end, new in sorted(replacements, key=lambda item: item[0], reverse=True):
+        new_content = new_content[:start] + new + new_content[end:]
 
     if broken_targets:
         if vault.wikilink_policy == "strict":
