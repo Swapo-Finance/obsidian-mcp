@@ -10,6 +10,7 @@ from ..utils.filesystem import get_vault
 from ..utils import validate_note_path, sanitize_path
 from ..utils.validation import validate_content
 from ..utils.vault_config import (
+    apply_frontmatter_requirements,
     check_note_size_policy,
     check_template_conformance,
     count_lines,
@@ -110,17 +111,26 @@ def normalize_frontmatter_tags_for_kebab(vault, content: str) -> str:
 async def _apply_write_checks(vault, path: str, content: str, enforce_template: bool) -> Tuple[str, List[str]]:
     """Shared write-time checks for create_note and update_note(replace):
     template conformance (only when enforce_template — create/replace, never
-    edit_note_section/append), wikilink validation, and kebab tag/name
-    normalization. Returns (possibly-rewritten content, warnings).
-    Raises ValueError for any hard violation (strict policy, malformed
-    wikilink, non-normalizable tag/name) — caller writes nothing in that case.
+    edit_note_section/append), wikilink validation, kebab tag/name
+    normalization, and (OBSIDIAN_REQUIRE_FRONTMATTER) the minimal
+    name/description frontmatter contract. Returns (possibly-rewritten
+    content, warnings). Raises ValueError for any hard violation (strict
+    policy, malformed wikilink, non-normalizable tag/name, missing
+    description) — caller writes nothing in that case.
     """
     if enforce_template:
         check_template_conformance(vault, path, content)
 
     content, warnings = await validate_wikilinks_for_write(vault, content)
     content = normalize_frontmatter_tags_for_kebab(vault, content)
-    content = apply_slug_style_to_frontmatter_name(vault, content)
+    if vault.require_frontmatter:
+        # apply_frontmatter_requirements forces `name` from the (already
+        # slug-styled) filename unconditionally, superseding the plain
+        # slug-style name pass below — skip it so we don't validate a
+        # frontmatter `name` value that's about to be overwritten anyway.
+        content = apply_frontmatter_requirements(vault, path, content)
+    else:
+        content = apply_slug_style_to_frontmatter_name(vault, content)
     return content, warnings
 
 

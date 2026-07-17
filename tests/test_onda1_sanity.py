@@ -126,9 +126,13 @@ class TestTemplateConformance:
         with pytest.raises(ValueError):
             await create_note("01-projects/Bad.md", "# Just a note\n")
 
+        # description: is required by the (default-on) OBSIDIAN_REQUIRE_FRONTMATTER
+        # on top of the template's own required keys/headings — both checks
+        # must pass together.
         result = await create_note(
             "01-projects/Good.md",
-            "---\nstatus: active\n---\n\n## Objetivo\n\nGoal\n\n## Status\n\nOK\n",
+            "---\nstatus: active\ndescription: Sample project note\n---\n\n"
+            "## Objetivo\n\nGoal\n\n## Status\n\nOK\n",
         )
         assert result["success"] is True
 
@@ -142,8 +146,16 @@ class TestVaultCacheIncrementalUpdate:
     async def vault(self):
         temp_dir = tempfile.mkdtemp(prefix="obsidian_onda1_cache_")
         (Path(temp_dir) / "A.md").write_text("---\ntags: [alpha]\n---\n# A\n")
+
+        # This class exercises cache incrementality, not the
+        # frontmatter-requirement feature — its create_note calls below
+        # don't set a `description`, so turn the (default-on) requirement
+        # off for this vault.
+        import os
+        os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"
         v = init_vault(temp_dir)
         yield v
+        os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)
         shutil.rmtree(temp_dir)
 
     @pytest.mark.asyncio

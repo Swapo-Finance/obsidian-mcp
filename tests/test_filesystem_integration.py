@@ -28,10 +28,16 @@ class TestObsidianFilesystem:
         """Create a temporary test vault."""
         # Create temporary directory
         temp_dir = tempfile.mkdtemp(prefix="obsidian_test_")
-        
+
         # Set environment variable
         os.environ["OBSIDIAN_VAULT_PATH"] = temp_dir
-        
+
+        # This file exercises generic CRUD/search/image behavior, not the
+        # frontmatter-requirement feature (OBSIDIAN_REQUIRE_FRONTMATTER
+        # defaults to true) — several fixtures below create notes without a
+        # `description`, so turn the requirement off for this vault.
+        os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"
+
         # Initialize vault
         vault = init_vault(temp_dir)
         
@@ -96,10 +102,11 @@ And another style:
             await current_vault._update_search_index()
         
         yield vault
-        
+
         # Cleanup
         if current_vault and current_vault.persistent_index:
             await current_vault.persistent_index.close()
+        os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)
         shutil.rmtree(temp_dir)
     
     @pytest.mark.asyncio

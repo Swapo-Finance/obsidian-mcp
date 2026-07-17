@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from fastmcp import Context
 from ..utils.filesystem import get_vault
 from ..utils.validation import validate_content
-from ..utils.vault_config import build_template_info
+from ..utils.vault_config import build_template_info, seed_daily_frontmatter
 from ..constants import ERROR_MESSAGES
 from .link_management import validate_wikilinks_for_write
 from .note_management import _serialize_note_writes
@@ -76,6 +76,11 @@ async def add_daily_note(
         # never needs a separate template-conformance check.
         info = build_template_info(vault, vault.daily_dir or "")
         base_content = info["skeleton"] if info["enforced"] else f"# {day.isoformat()}\n"
+        # OBSIDIAN_REQUIRE_FRONTMATTER (default on): the server — not the
+        # LLM — is creating this file, so name/description are generated
+        # automatically here rather than raising (spec section 10.3's
+        # add_daily bullet). No-op when the config is off.
+        base_content = seed_daily_frontmatter(vault, base_content, day.isoformat())
 
     fragment = unicodedata.normalize("NFC", content)
     fragment, warnings = await validate_wikilinks_for_write(vault, fragment)
