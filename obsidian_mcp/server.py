@@ -43,6 +43,9 @@ from .tools import (
     find_orphaned_notes,
     read_image,
     view_note_images,
+    get_note_template,
+    get_help,
+    add_daily_note,
 )
 
 # Check for vault path
@@ -323,6 +326,14 @@ async def search_notes_tool(
         le=500,
         default=50
     )] = 50,
+    mode: Annotated[Optional[Literal["content", "index", "auto"]], Field(
+        description="Result shape override. 'content': a text snippet per result (today's default shape). "
+                     "'index': lightweight {path, name, description, score, match_type} from the vault's cache, "
+                     "no snippet — read_note the ones that matter. 'auto' (server default): index once the "
+                     "result count passes OBSIDIAN_SEARCH_INDEX_THRESHOLD, else content. Leave unset to use the "
+                     "server's configured default.",
+        default=None
+    )] = None,
     ctx=None
 ):
     """
@@ -366,7 +377,7 @@ async def search_notes_tool(
         Response includes match_type field: "filename" or "content".
     """
     try:
-        return await search_notes(query, context_length, max_results, ctx)
+        return await search_notes(query, context_length, max_results, mode, ctx)
     except ValueError as e:
         raise ToolError(str(e))
     except Exception as e:
@@ -389,6 +400,12 @@ async def search_by_date_tool(
         description="'within' = all notes in the last N days, 'exactly' = only notes from exactly N days ago",
         default="within"
     )] = "within",
+    mode: Annotated[Optional[Literal["content", "index", "auto"]], Field(
+        description="Result shape override. 'index' adds each result's cached name/description (no snippet to "
+                     "strip here). 'auto' (server default): index once the result count passes "
+                     "OBSIDIAN_SEARCH_INDEX_THRESHOLD. Leave unset to use the server's configured default.",
+        default=None
+    )] = None,
     ctx=None
 ):
     """
@@ -407,7 +424,7 @@ async def search_by_date_tool(
         Notes matching the date criteria with paths and timestamps
     """
     try:
-        return await search_by_date(date_type, days_ago, operator, ctx)
+        return await search_by_date(date_type, days_ago, operator, mode, ctx)
     except ValueError as e:
         raise ToolError(str(e))
     except Exception as e:
@@ -436,6 +453,13 @@ async def search_by_regex_tool(
         ge=1,
         le=200
     )] = 50,
+    mode: Annotated[Optional[Literal["content", "index", "auto"]], Field(
+        description="Result shape override. 'index': lightweight {path, name, description, score, match_type} "
+                     "(match_count doubles as score) instead of per-match text snippets. 'auto' (server default): "
+                     "index once the result count passes OBSIDIAN_SEARCH_INDEX_THRESHOLD. Leave unset to use the "
+                     "server's configured default.",
+        default=None
+    )] = None,
     ctx=None
 ):
     """
@@ -462,7 +486,7 @@ async def search_by_regex_tool(
         Notes containing regex matches with match details and context
     """
     try:
-        return await search_by_regex(pattern, flags, context_length, max_results, ctx)
+        return await search_by_regex(pattern, flags, context_length, max_results, mode, ctx)
     except ValueError as e:
         raise ToolError(str(e))
     except Exception as e:
@@ -490,6 +514,13 @@ async def search_by_property_tool(
         ge=0,
         le=500
     )] = 20,
+    mode: Annotated[Optional[Literal["content", "index", "auto"]], Field(
+        description="Result shape override. 'index': lightweight {path, name, description, score, match_type, "
+                     "property_value} instead of a text snippet (property_value is always kept — it's the point "
+                     "of this search). 'auto' (server default): index once the result count passes "
+                     "OBSIDIAN_SEARCH_INDEX_THRESHOLD. Leave unset to use the server's configured default.",
+        default=None
+    )] = None,
     ctx=None
 ):
     """
@@ -527,7 +558,7 @@ async def search_by_property_tool(
         Notes matching the property criteria with values displayed
     """
     try:
-        return await search_by_property(property_name, value, operator, context_length, ctx)
+        return await search_by_property(property_name, value, operator, context_length, mode, ctx)
     except ValueError as e:
         raise ToolError(str(e))
     except Exception as e:
@@ -1434,6 +1465,109 @@ async def view_note_images_tool(
     except Exception as e:
         raise ToolError(f"Failed to view note images: {str(e)}")
 
+@mcp.tool()
+async def get_note_template_tool(
+    path: Annotated[str, Field(
+        description="A note path (e.g. '01-projects/Foo.md') or a folder path (e.g. '01-projects') "
+                     "to look up the OBSIDIAN_FOLDER_TEMPLATES rule for. Only the folder matters.",
+        min_length=0,
+        max_length=255,
+        examples=["01-projects", "01-projects/Foo.md", ""]
+    )] = "",
+    ctx=None
+):
+    """
+    Show the template rule (if any) that applies to a note or folder.
+
+    When to use:
+    - Before create_note/update_note in a folder you suspect is enforced
+    - Right after a template-conformance ToolError, to get the exact
+      skeleton/required headings for a retry
+    - Exploring which folders have a template configured
+
+    When NOT to use:
+    - Reading an existing note's content (use read_note instead)
+
+    Returns:
+        {enforced, folder_rule, template_path, required_headings,
+         required_frontmatter_keys, skeleton, instructions}.
+        enforced=false means the folder is free-form.
+    """
+    try:
+        return await get_note_template(path, ctx)
+    except ValueError as e:
+        raise ToolError(str(e))
+    except Exception as e:
+        raise ToolError(f"Failed to get note template: {str(e)}")
+
+@mcp.tool()
+async def help_tool(ctx=None):
+    """
+    Catalog of every env var (with its current effective value), the 3
+    accepted forms for path-shaped config, and a one-line index of all
+    tools — without the token cost of the full tools/list schema.
+
+    When to use:
+    - Unsure which OBSIDIAN_* env var controls a behavior, or its current
+      effective value
+    - Unsure how a folder/template/daily-dir path you're about to configure
+      will be resolved
+    - Looking for which tool covers something you haven't used yet
+
+    When NOT to use:
+    - Detailed parameter schemas for a specific tool (already in tools/list)
+
+    Returns:
+        {env_vars: [...], path_anchoring: str, tools: [{name, purpose}, ...]}
+    """
+    try:
+        return await get_help(ctx)
+    except Exception as e:
+        raise ToolError(f"Failed to build help catalog: {str(e)}")
+
+@mcp.tool()
+async def add_daily_note_tool(
+    content: Annotated[str, Field(
+        description="Markdown to append to the end of today's (or the given date's) daily note.",
+        min_length=1,
+        max_length=1000000,
+        examples=["## 14:30\n\nShipped the auth refactor.", "- Talked to [[Jane Doe]] about Q3 planning"]
+    )],
+    date: Annotated[Optional[str], Field(
+        description="Optional ISO date (YYYY-MM-DD) to target a specific day instead of today. "
+                     "Does not create/backfill other days in between.",
+        default=None,
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        examples=["2025-01-15"]
+    )] = None,
+    ctx=None
+):
+    """
+    Append to today's daily note, creating it (from the daily-dir's template,
+    if one is configured) if it doesn't exist yet.
+
+    When to use:
+    - Journaling / logging a quick update without looking up or reading the
+      daily note's path first
+    - Any time you'd otherwise do read_note + create_note/update_note on a
+      note under OBSIDIAN_DAILY_DIR
+
+    When NOT to use:
+    - Editing a specific section of the daily note (use edit_note_section
+      after reading it — this tool only appends at the end)
+    - Non-daily notes (use create_note/update_note instead)
+
+    Returns:
+        {path, created, appended: true}. Daily notes are always exempt from
+        the note-size policy, and old daily notes are never deleted by this
+        tool.
+    """
+    try:
+        return await add_daily_note(content, date, ctx)
+    except (ValueError, FileNotFoundError) as e:
+        raise ToolError(str(e))
+    except Exception as e:
+        raise ToolError(f"Failed to add daily note: {str(e)}")
 
 
 def main():

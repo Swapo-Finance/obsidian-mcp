@@ -41,6 +41,13 @@ from .image_management import (
 from .view_note_images import (
     view_note_images,
 )
+from .vault_meta import (
+    get_note_template,
+    get_help,
+)
+from .daily_notes import (
+    add_daily_note,
+)
 
 __all__ = [
     # Note management
@@ -75,4 +82,9 @@ __all__ = [
     # Image management
     "read_image",
     "view_note_images",
+    # Vault metadata
+    "get_note_template",
+    "get_help",
+    # Daily notes
+    "add_daily_note",
 ]

@@ -165,6 +165,20 @@ async def find_orphaned_notes(
         if ctx and (i + 1) % 50 == 0:
             ctx.info(f"Processed {i + 1}/{total_notes} notes...")
     
+    # Light enrichment (spec section 10.4's closing sentence): add each
+    # orphaned note's cached name/description. Best-effort — a vault
+    # without a real VaultCache (e.g. a bare mock in a unit test) just
+    # means this loop is skipped, orphan detection itself is unaffected.
+    if orphaned_notes:
+        try:
+            all_meta = await vault.cache.get_all_note_meta()
+            for item in orphaned_notes:
+                meta = all_meta.get(item["path"], {})
+                item["name"] = meta.get("name", "")
+                item["description"] = meta.get("description", "")
+        except Exception as e:
+            logger.warning(f"Skipping name/description enrichment: {e}")
+
     # Sort by modified date (oldest first)
     orphaned_notes.sort(key=lambda x: x.get("modified", ""), reverse=False)
     

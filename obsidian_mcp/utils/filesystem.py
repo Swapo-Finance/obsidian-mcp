@@ -2,7 +2,6 @@
 
 import os
 import re
-import json
 import asyncio
 import aiofiles
 import yaml
@@ -15,6 +14,8 @@ from typing import Optional, Dict, Any, List, Tuple
 from PIL import Image
 from ..models import Note, NoteMetadata
 from .persistent_index import PersistentSearchIndex
+from .vault_cache import VaultCache
+from .vault_config import normalize_vault_relative_path, parse_folder_templates
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,114 @@ class ObsidianVault:
         # (not fcntl, which is for cross-process locking).
         # ponytail: global lock; make it per-path if write throughput matters.
         self._write_lock = asyncio.Lock()
+
+        # --- Optional vault-wide write policies. Every knob defaults to
+        # today's behavior; nothing here changes anything unless the
+        # corresponding OBSIDIAN_* env var is explicitly set. ---
+        self.wikilink_policy = self._read_choice_env(
+            "OBSIDIAN_WIKILINK_POLICY", ("strict", "warn", "off"), "warn"
+        )
+        self.note_size_policy = self._read_choice_env(
+            "OBSIDIAN_NOTE_SIZE_POLICY", ("strict", "warn", "off"), "warn"
+        )
+        self.tag_style = self._read_choice_env(
+            "OBSIDIAN_TAG_STYLE", ("kebab", "as-is"), "as-is"
+        )
+        self.slug_style = self._read_choice_env(
+            "OBSIDIAN_SLUG_STYLE", ("kebab", "as-is"), "as-is"
+        )
+
+        self.max_note_lines = self._read_int_env("OBSIDIAN_MAX_NOTE_LINES", 500)
+        self.append_headroom_lines = self._read_int_env("OBSIDIAN_APPEND_HEADROOM_LINES", 100)
+        self.cache_stat_ttl_seconds = self._read_int_env("OBSIDIAN_CACHE_STAT_TTL_SECONDS", 30)
+
+        # Opinionated by default (spec section 10.3): create_note and
+        # update_note(replace/create_if_not_exists) require a `description`
+        # in frontmatter and force `name` to match the filename, unless this
+        # is explicitly turned off.
+        self.require_frontmatter = self._read_bool_env("OBSIDIAN_REQUIRE_FRONTMATTER", True)
+
+        # Search index mode (spec section 10.4): content (today's behavior),
+        # index (lightweight {path, name, description, score, match_type}
+        # from the cache), or auto (index once a search's result count beats
+        # the threshold below).
+        self.search_result_mode = self._read_choice_env(
+            "OBSIDIAN_SEARCH_RESULT_MODE", ("content", "index", "auto"), "auto"
+        )
+        self.search_index_threshold = self._read_int_env("OBSIDIAN_SEARCH_INDEX_THRESHOLD", 10)
+
+        daily_dir_raw = os.getenv("OBSIDIAN_DAILY_DIR", "daily")
+        normalized_daily = normalize_vault_relative_path(daily_dir_raw, self.vault_path)
+        if normalized_daily is None:
+            logger.warning(
+                "OBSIDIAN_DAILY_DIR=%r resolves outside the vault (%s); falling back to "
+                "the default 'daily'. Accepted forms: vault-relative ('daily'), "
+                "vault-name-prefixed, or an absolute/'~' path under the vault.",
+                daily_dir_raw, self.vault_path,
+            )
+            normalized_daily = "daily"
+        self.daily_dir = normalized_daily
+
+        self.folder_templates = parse_folder_templates(
+            os.getenv("OBSIDIAN_FOLDER_TEMPLATES"), self.vault_path
+        )
+
+        # Lazily-built, incrementally-updated index of notes/tags/links
+        # (see vault_cache.py) — avoids re-scanning the whole vault on every
+        # backlink/tag/broken-link query.
+        self.cache = VaultCache(self)
+
+    @staticmethod
+    def _read_choice_env(name: str, choices: tuple, default: str) -> str:
+        """Read an enum-like env var; fall back to `default` (with a
+        warning) if set but not one of `choices` — config never crashes
+        the boot."""
+        value = os.getenv(name, default)
+        if value not in choices:
+            logger.warning(
+                "Invalid %s=%r; must be one of %s. Falling back to %r.",
+                name, value, choices, default,
+            )
+            return default
+        return value
+
+    @staticmethod
+    def _read_bool_env(name: str, default: bool) -> bool:
+        """Read a bool-valued env var (true/1/yes/on, case-insensitive,
+        surrounding whitespace ignored); anything else (including unset)
+        falls back to `default` — same truthy convention already used for
+        OBSIDIAN_AUTO_INDEX_UPDATE, just factored out for reuse."""
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in ("true", "1", "yes", "on")
+
+    @staticmethod
+    def _read_int_env(name: str, default: int) -> int:
+        """Read an int-valued env var; fall back to `default` (with a
+        warning) if unset, blank, or not a valid integer after stripping
+        surrounding whitespace (env vars are always strings — ".strip()"
+        makes " 500 " coerce the same as "500") — config never crashes
+        the boot."""
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        stripped = raw.strip()
+        try:
+            return int(stripped)
+        except ValueError:
+            logger.warning(
+                "Invalid %s=%r; must be an integer. Falling back to %d.",
+                name, raw, default,
+            )
+            return default
+
+    def is_daily_note_path(self, relpath: str) -> bool:
+        """True if relpath lives inside OBSIDIAN_DAILY_DIR — daily notes are
+        always exempt from OBSIDIAN_MAX_NOTE_LINES / _APPEND_HEADROOM_LINES."""
+        if not self.daily_dir:
+            return False
+        return relpath == self.daily_dir or relpath.startswith(self.daily_dir + "/")
 
     @property
     def write_lock(self) -> asyncio.Lock:
@@ -382,9 +491,17 @@ class ObsidianVault:
         # Write content asynchronously
         async with aiofiles.open(full_path, 'w', encoding='utf-8') as f:
             await f.write(content)
-        
+
         # Return the newly created note
-        return await self.read_note(path)
+        note = await self.read_note(path)
+
+        # Keep the vault-wide cache (notes/tags/links index) in sync. Every
+        # tool that mutates a note (create/update/edit/move/rename/tag ops/
+        # daily notes) funnels through this method, so hooking it here is
+        # the single point that covers all of them.
+        await self.cache.note_mutated(path, content)
+
+        return note
     
     async def delete_note(self, path: str) -> bool:
         """
@@ -404,9 +521,10 @@ class ObsidianVault:
         
         if not full_path.exists():
             raise FileNotFoundError(f"Note not found: {path}")
-        
+
         # Delete the file
         full_path.unlink()
+        await self.cache.note_mutated(path, None)
         return True
     
     async def _initialize_persistent_index(self) -> None:

@@ -102,6 +102,18 @@ ERROR_MESSAGES = {
         "3) Check that destination is not a subfolder of source, "
         "4) Verify you have permission to create/delete notes"
     ),
+    "path_outside_vault": (
+        "Path '{path}' resolves outside the vault ({vault_path}). "
+        "Accepted forms: 1) vault-relative (e.g. '01-projects'), "
+        "2) vault-name-prefixed (e.g. '{vault_name}/01-projects'), "
+        "3) absolute or '~'-expanded, pointing inside the vault. "
+        "If this came from OBSIDIAN_FOLDER_TEMPLATES/OBSIDIAN_DAILY_DIR in the .mcp.json config, "
+        "it's likely anchored at the project root instead of the vault — review that value."
+    ),
+    "invalid_daily_date": (
+        "Invalid date: '{date}'. "
+        "Must be ISO format YYYY-MM-DD (e.g. '2025-01-15'), or omit it to use today's date"
+    ),
 }
 
 # Standardized response structures for reasoning-friendly consistency

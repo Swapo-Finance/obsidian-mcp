@@ -2,92 +2,161 @@
 
 import re
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
-from pathlib import Path
 from ..utils.filesystem import get_vault
-from ..utils import is_markdown_file
 from ..utils.validation import (
     validate_search_query,
     validate_context_length,
     validate_date_search_params,
     validate_directory_path
 )
-from ..models import VaultItem
-from ..constants import ERROR_MESSAGES
 
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Search result mode (spec section 10.4): content (today's behavior, a text
+# snippet per result), index (lightweight {path, name, description, score,
+# match_type} sourced from the VaultCache, no snippet), or auto (index once
+# a search's result count beats OBSIDIAN_SEARCH_INDEX_THRESHOLD).
+# ---------------------------------------------------------------------------
+
+def _resolve_search_mode(vault, mode: Optional[str], count: int) -> str:
+    """Effective content/index mode for one search response. An explicit
+    per-call `mode` wins over OBSIDIAN_SEARCH_RESULT_MODE; `auto` resolves
+    to `index` once `count` exceeds OBSIDIAN_SEARCH_INDEX_THRESHOLD, else
+    `content`. Falls back to "content" for anything unrecognized (e.g. a
+    bare mock vault in a unit test with no real config) — same
+    fail-safe-to-today's-behavior spirit as the rest of this config surface.
+    """
+    configured = getattr(vault, "search_result_mode", "content")
+    effective = mode if mode is not None else configured
+    if effective not in ("content", "index", "auto"):
+        effective = "content"
+    if effective == "auto":
+        threshold = getattr(vault, "search_index_threshold", 10)
+        if not isinstance(threshold, int):
+            threshold = 10
+        return "index" if count > threshold else "content"
+    return effective
+
+
+async def _to_index_items(
+    vault,
+    results: List[Dict[str, Any]],
+    default_match_type: str,
+    score_key: str = "score",
+    extra_keys: Tuple[str, ...] = (),
+) -> List[Dict[str, Any]]:
+    """Convert content-mode result dicts into lightweight index-mode items —
+    {path, name, description, score, match_type} — sourced entirely from the
+    VaultCache (spec sections 10.2/10.4), no extra per-note disk reads.
+    `score_key` lets a caller repurpose a differently-named numeric field
+    (e.g. search_by_regex's match_count) as the index item's `score`.
+    `extra_keys` passes through additional fields worth keeping even in
+    index mode because they're structured data, not prose content (e.g.
+    search_by_property's property_value).
+    """
+    all_meta = await vault.cache.get_all_note_meta()
+    items = []
+    for r in results:
+        meta = all_meta.get(r["path"], {})
+        item = {
+            "path": r["path"],
+            "name": meta.get("name", ""),
+            "description": meta.get("description", ""),
+            "score": r.get(score_key, 0),
+            "match_type": r.get("match_type", default_match_type),
+        }
+        for key in extra_keys:
+            if key in r:
+                item[key] = r[key]
+        items.append(item)
+    return items
+
+
+async def _enrich_with_note_meta(vault, items: List[Dict[str, Any]], path_key: str = "path") -> None:
+    """In-place: add 'name'/'description' (from the VaultCache) to each item
+    that has a `path_key` field. Used for the lighter, always-on enrichment
+    on list_notes/get_backlinks/find_broken_links/find_orphaned_notes (spec
+    section 10.4's closing sentence) — these tools don't carry a content
+    snippet to begin with, so there's nothing to strip, just fields to add.
+    """
+    if not items:
+        return
+    all_meta = await vault.cache.get_all_note_meta()
+    for item in items:
+        path = item.get(path_key)
+        if not path:
+            continue
+        meta = all_meta.get(path, {})
+        item["name"] = meta.get("name", "")
+        item["description"] = meta.get("description", "")
+
+
 async def _search_by_tag(vault, tag: str, context_length: int) -> List[Dict[str, Any]]:
-    """Search for notes containing a specific tag, supporting hierarchical tags."""
+    """Search for notes containing a specific tag, supporting hierarchical tags.
+
+    Matching tags (and which notes carry them) come from the vault's tags
+    index (see utils/vault_cache.py) instead of reading and re-parsing every
+    note in the vault; only the notes that actually matched are then read,
+    to build the surrounding-text context.
+    """
+    tags_index = await vault.cache.get_tags_index()  # tag -> {relpaths}
+
+    # For hierarchical tags, we support:
+    # - Exact match: "parent/child" matches "parent/child"
+    # - Parent match: "parent" matches "parent/child", "parent/grandchild"
+    # - Child match: searching for "child" finds "parent/child"
+    # - Any level match: searching for "middle" finds "parent/middle/child"
+    matches_by_path: Dict[str, List[str]] = {}
+    for note_tag, paths in tags_index.items():
+        matched = (
+            note_tag == tag
+            or note_tag.startswith(tag + "/")
+            or ("/" in note_tag and note_tag.split("/")[-1] == tag)
+            or ("/" in note_tag and f"/{tag}/" in f"/{note_tag}/")
+        )
+        if matched:
+            for path in paths:
+                matches_by_path.setdefault(path, []).append(note_tag)
+
     results = []
-    
-    # Get all notes
-    all_notes = await vault.list_notes(recursive=True)
-    
-    for note_info in all_notes:
+    for path, matching_tags in matches_by_path.items():
         try:
-            # Read the note to get its tags
-            note = await vault.read_note(note_info["path"])
-            
-            # Check for exact match or hierarchical match
-            # For hierarchical tags, we support:
-            # - Exact match: "parent/child" matches "parent/child"
-            # - Parent match: "parent" matches "parent/child", "parent/grandchild"
-            # - Child match: searching for "child" finds "parent/child"
-            matched = False
-            matching_tags = []
-            
-            for note_tag in note.metadata.tags:
-                # Exact match
-                if note_tag == tag:
-                    matched = True
-                    matching_tags.append(note_tag)
-                # Parent tag match - if searching for "parent", match "parent/child"
-                elif note_tag.startswith(tag + "/"):
-                    matched = True
-                    matching_tags.append(note_tag)
-                # Child tag match - if searching for "child", match "parent/child"
-                elif "/" in note_tag and note_tag.split("/")[-1] == tag:
-                    matched = True
-                    matching_tags.append(note_tag)
-                # Any level match - if searching for "middle", match "parent/middle/child"
-                elif "/" in note_tag and f"/{tag}/" in f"/{note_tag}/":
-                    matched = True
-                    matching_tags.append(note_tag)
-            
-            if matched:
-                # Get context around the tag occurrences
-                content = note.content
-                contexts = []
-                
-                # Search for all matching tags in content
-                for matched_tag in matching_tags:
-                    tag_pattern = f"#{matched_tag}"
-                    idx = 0
-                    while True:
-                        idx = content.find(tag_pattern, idx)
-                        if idx == -1:
-                            break
-                        
-                        # Extract context
-                        start = max(0, idx - context_length // 2)
-                        end = min(len(content), idx + len(tag_pattern) + context_length // 2)
-                        context = content[start:end].strip()
-                        contexts.append(context)
-                        idx += 1
-                
-                results.append({
-                    "path": note.path,
-                    "score": 1.0,
-                    "matches": matching_tags,
-                    "context": " ... ".join(contexts) if contexts else f"Note contains tags: {', '.join(f'#{t}' for t in matching_tags)}"
-                })
+            note = await vault.read_note(path)
         except Exception:
             # Skip notes we can't read
             continue
-    
+
+        # Get context around the tag occurrences
+        content = note.content
+        contexts = []
+
+        # Search for all matching tags in content
+        for matched_tag in matching_tags:
+            tag_pattern = f"#{matched_tag}"
+            idx = 0
+            while True:
+                idx = content.find(tag_pattern, idx)
+                if idx == -1:
+                    break
+
+                # Extract context
+                start = max(0, idx - context_length // 2)
+                end = min(len(content), idx + len(tag_pattern) + context_length // 2)
+                context = content[start:end].strip()
+                contexts.append(context)
+                idx += 1
+
+        results.append({
+            "path": note.path,
+            "score": 1.0,
+            "matches": matching_tags,
+            "context": " ... ".join(contexts) if contexts else f"Note contains tags: {', '.join(f'#{t}' for t in matching_tags)}"
+        })
+
     return results
 
 
@@ -363,6 +432,7 @@ async def search_notes(
     query: str,
     context_length: int = 20,
     max_results: int = 50,
+    mode: Optional[str] = None,
     ctx=None
 ) -> dict:
     """
@@ -438,14 +508,18 @@ async def search_notes(
             # Tag search
             tag = query[4:].lstrip("#")
             results = await _search_by_tag(vault, tag, context_length)
+            query_type = "tag"
         elif query.startswith("path:"):
             # Path search
             path_pattern = query[5:]
             results = await _search_by_path(vault, path_pattern, context_length)
+            query_type = "path"
         elif query.startswith("property:"):
             # Property search
             results = await _search_by_property(vault, query, context_length)
+            query_type = "property"
         else:
+            query_type = "content"
             # Enhanced default search: search both content AND filenames
             # First, get content search results
             content_results = await vault.search_notes(query, context_length, max_results * 2)  # Get more to allow merging
@@ -488,6 +562,14 @@ async def search_notes(
         # displayed count vs. the true total so it is accurate.
         total_count = metadata.get("total_count", len(results)) if metadata else len(results)
 
+        # Search result mode (spec section 10.4): trim each result down to
+        # {path, name, description, score, match_type} once resolved to
+        # "index" — computed on the count about to be returned, same as
+        # every other search tool below.
+        effective_mode = _resolve_search_mode(vault, mode, len(results))
+        if effective_mode == "index":
+            results = await _to_index_items(vault, results, default_match_type=query_type)
+
         # Return standardized search results structure
         response = {
             "results": results,
@@ -495,16 +577,17 @@ async def search_notes(
             "query": {
                 "text": query,
                 "context_length": context_length,
-                "type": "tag" if query.startswith("tag:") else "path" if query.startswith("path:") else "property" if query.startswith("property:") else "content"
+                "type": query_type,
+                "mode": effective_mode
             },
             "truncated": total_count > len(results),
             "total_count": total_count
         }
-        
+
         # Add message if results are truncated
         if response["truncated"] and response["total_count"] > response["count"]:
             response["message"] = f"Showing {response['count']} of {response['total_count']} results. Use max_results parameter to see more."
-        
+
         return response
     except Exception as e:
         if ctx:
@@ -527,6 +610,7 @@ async def search_by_date(
     date_type: str = "modified",
     days_ago: int = 7,
     operator: str = "within",
+    mode: Optional[str] = None,
     ctx=None
 ) -> dict:
     """
@@ -626,7 +710,15 @@ async def search_by_date(
         
         # Sort by date (most recent first)
         formatted_results.sort(key=lambda x: x["date"], reverse=True)
-        
+
+        # Search result mode (spec section 10.4): search_by_date never
+        # carried a content snippet to begin with, so "index" mode here
+        # just adds name/description per result rather than trimming
+        # anything away.
+        effective_mode = _resolve_search_mode(vault, mode, len(formatted_results))
+        if effective_mode == "index":
+            await _enrich_with_note_meta(vault, formatted_results)
+
         # Return standardized search results structure
         return {
             "results": formatted_results,
@@ -635,7 +727,8 @@ async def search_by_date(
                 "date_type": date_type,
                 "days_ago": days_ago,
                 "operator": operator,
-                "description": query_description
+                "description": query_description,
+                "mode": effective_mode
             },
             "truncated": False
         }
@@ -663,6 +756,7 @@ async def search_by_property(
     value: Optional[str] = None,
     operator: str = "=",
     context_length: int = 20,
+    mode: Optional[str] = None,
     ctx=None
 ) -> dict:
     """
@@ -739,7 +833,16 @@ async def search_by_property(
             except:
                 # Fall back to string sort
                 results.sort(key=lambda x: str(x.get("property_value", "")))
-        
+
+        # Search result mode (spec section 10.4). property_value is kept
+        # even in index mode — it's the whole point of a property search,
+        # structured data rather than the prose snippet index mode strips.
+        effective_mode = _resolve_search_mode(vault, mode, len(results))
+        if effective_mode == "index":
+            results = await _to_index_items(
+                vault, results, default_match_type="property", extra_keys=("property_value",)
+            )
+
         # Return standardized search results structure
         return {
             "results": results,
@@ -748,7 +851,8 @@ async def search_by_property(
                 "property": property_name,
                 "operator": operator,
                 "value": value,
-                "context_length": context_length
+                "context_length": context_length,
+                "mode": effective_mode
             },
             "truncated": False
         }
@@ -817,7 +921,17 @@ async def list_notes(
     
     try:
         notes = await vault.list_notes(directory, recursive)
-        
+
+        # Light enrichment (spec section 10.4's closing sentence): add each
+        # note's cached description. Not `name` too — list_notes' own
+        # "name" already means the filename (e.g. "Web App.md"); overloading
+        # it with the frontmatter-derived name would be a breaking, confusing
+        # collision, so only description (a genuinely new field) is added.
+        if notes:
+            all_meta = await vault.cache.get_all_note_meta()
+            for note in notes:
+                note["description"] = all_meta.get(note["path"], {}).get("description", "")
+
         # Return standardized list results structure
         return {
             "items": notes,
@@ -959,6 +1073,7 @@ async def search_by_regex(
     flags: Optional[List[str]] = None,
     context_length: int = 20,
     max_results: int = 50,
+    mode: Optional[str] = None,
     ctx=None
 ) -> dict:
     """
@@ -1087,7 +1202,16 @@ async def search_by_regex(
                 formatted_result["matches"].append(match_info)
             
             formatted_results.append(formatted_result)
-        
+
+        # Search result mode (spec section 10.4). There's no natural
+        # "score" field for a regex match, so match_count doubles as one —
+        # more matches in a note is a reasonable proxy for relevance.
+        effective_mode = _resolve_search_mode(vault, mode, len(formatted_results))
+        if effective_mode == "index":
+            formatted_results = await _to_index_items(
+                vault, formatted_results, default_match_type="regex", score_key="match_count"
+            )
+
         # Return standardized search results structure
         return {
             "results": formatted_results,
@@ -1096,7 +1220,8 @@ async def search_by_regex(
                 "pattern": pattern,
                 "flags": flags or [],
                 "context_length": context_length,
-                "max_results": max_results
+                "max_results": max_results,
+                "mode": effective_mode
             },
             "truncated": len(results) == max_results  # True if we hit the limit
         }
