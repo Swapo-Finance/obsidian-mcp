@@ -2,64 +2,31 @@
 
 import re
 import asyncio
-from typing import List, Optional, Dict, Set, Tuple
+from pathlib import Path
+from typing import List, Optional, Dict, Tuple
 from ..utils.filesystem import get_vault
-from ..utils import is_markdown_file
 from ..utils.validation import validate_note_path
+from ..utils.vault_config import slugify_kebab
 
-
-# Regular expressions for matching different link types
-WIKI_LINK_PATTERN = re.compile(r'\[\[([^\]|]+)(\|([^\]]+))?\]\]')
-MARKDOWN_LINK_PATTERN = re.compile(r'\[([^\]]+)\]\(([^)]+)\)')
-
-# Cache for vault structure to avoid repeated scans
-_vault_notes_cache: Optional[Dict[str, str]] = None
-_cache_timestamp: Optional[float] = None
-CACHE_TTL = 300  # 5 minutes
+# Re-exported from utils/links.py (moved there so utils/vault_cache.py can
+# reuse the same extraction without utils/ importing from tools/). The one
+# pre-existing external import — `from ..tools.link_management import
+# get_backlinks, WIKI_LINK_PATTERN` in organization.py — keeps working
+# unchanged.
+from ..utils.links import WIKI_LINK_PATTERN, MARKDOWN_LINK_PATTERN, extract_links_from_content
 
 
 async def build_vault_notes_index(vault, force_refresh: bool = False) -> Dict[str, str]:
     """
     Build an index of all notes in the vault.
     Maps note names to their full paths.
-    
-    This is cached for performance.
+
+    Backed by the vault's VaultCache (auto-updated on every MCP mutation,
+    and via TTL-gated stat-diff for changes made outside the MCP server —
+    see utils/vault_cache.py) instead of a flat, blindly-300s-TTL,
+    re-scan-the-whole-vault-from-scratch cache.
     """
-    global _vault_notes_cache, _cache_timestamp
-    import time
-    
-    # Check if we can use cache
-    if not force_refresh and _vault_notes_cache is not None:
-        if _cache_timestamp and (time.time() - _cache_timestamp) < CACHE_TTL:
-            return _vault_notes_cache
-    
-    # Build fresh index
-    notes_index = {}
-    
-    # Get all notes from the vault
-    all_notes = await vault.list_notes(recursive=True)
-    
-    for note_info in all_notes:
-        full_path = note_info["path"]
-        note_name = note_info["name"]
-        
-        # Map both with and without .md extension
-        notes_index[note_name] = full_path
-        if note_name.endswith('.md'):
-            notes_index[note_name[:-3]] = full_path
-        
-        # Also map by just the filename without path
-        filename = full_path.split('/')[-1]
-        if filename != note_name:
-            notes_index[filename] = full_path
-            if filename.endswith('.md'):
-                notes_index[filename[:-3]] = full_path
-    
-    # Update cache
-    _vault_notes_cache = notes_index
-    _cache_timestamp = time.time()
-    
-    return notes_index
+    return await vault.cache.get_notes_index(force_refresh=force_refresh)
 
 
 async def find_notes_by_names(vault, note_names: List[str]) -> Dict[str, Optional[str]]:
@@ -107,56 +74,6 @@ async def check_links_validity_batch(vault, links: List[Dict[str, str]]) -> List
         results.append(link_copy)
     
     return results
-
-
-def extract_links_from_content(content: str) -> List[dict]:
-    """
-    Extract all links from note content.
-    
-    Finds both wiki-style ([[Link]]) and markdown-style ([text](link)) links.
-    
-    Args:
-        content: The note content to extract links from
-        
-    Returns:
-        List of link dictionaries with path, display text, and type
-    """
-    links = []
-    
-    # Extract wiki-style links
-    for match in WIKI_LINK_PATTERN.finditer(content):
-        link_path = match.group(1).strip()
-        alias = match.group(3)
-        
-        # Ensure .md extension for internal links
-        if not link_path.endswith('.md') and not link_path.startswith('http'):
-            link_path += '.md'
-        
-        links.append({
-            'path': link_path,
-            'display_text': alias.strip() if alias else match.group(1).strip(),
-            'type': 'wiki'
-        })
-    
-    # Extract markdown-style links (only internal links, not URLs)
-    for match in MARKDOWN_LINK_PATTERN.finditer(content):
-        link_path = match.group(2).strip()
-        
-        # Skip external URLs
-        if link_path.startswith('http://') or link_path.startswith('https://'):
-            continue
-        
-        # Ensure .md extension
-        if not link_path.endswith('.md'):
-            link_path += '.md'
-        
-        links.append({
-            'path': link_path,
-            'display_text': match.group(1).strip(),
-            'type': 'markdown'
-        })
-    
-    return links
 
 
 def get_link_context(content: str, match, context_length: int = 100) -> str:
@@ -244,15 +161,11 @@ async def get_backlinks(
     except FileNotFoundError:
         raise FileNotFoundError(f"Note not found: {path}")
     
-    # Build notes index
-    notes_index = await build_vault_notes_index(vault)
-    all_note_paths = list(set(notes_index.values()))  # Use set to get unique paths
-    
     # Create variations of the target path to match against
     target_names = [path]
     if path.endswith('.md'):
         target_names.append(path[:-3])
-    
+
     filename = path.split('/')[-1]
     if filename not in target_names:
         target_names.append(filename)
@@ -260,11 +173,23 @@ async def get_backlinks(
         filename_no_ext = filename[:-3]
         if filename_no_ext not in target_names:
             target_names.append(filename_no_ext)
-    
+
+    # Narrow the scan to notes whose extracted (already-parsed, in-memory —
+    # no disk I/O) links plausibly resolve to our target, instead of
+    # re-reading and regex-scanning every note in the vault. The actual
+    # match/context extraction below is untouched: same regex, same note
+    # content, same output shape — just run over a smaller candidate set.
+    all_forward_links = await vault.cache.get_all_forward_links()
+    candidate_note_paths = [
+        source_path
+        for source_path, links in all_forward_links.items()
+        if source_path != note.path and any(link['path'] in target_names for link in links)
+    ]
+
     if ctx:
         ctx.info(f"Will match against variations: {target_names}")
-        ctx.info(f"Scanning {len(all_note_paths)} notes...")
-    
+        ctx.info(f"Scanning {len(candidate_note_paths)} candidate notes (of {len(all_forward_links)} total)...")
+
     # Process notes in parallel batches
     backlinks = []
     batch_size = 10  # Process 10 notes at a time
@@ -327,8 +252,8 @@ async def get_backlinks(
             return []
     
     # Process in batches
-    for i in range(0, len(all_note_paths), batch_size):
-        batch = all_note_paths[i:i + batch_size]
+    for i in range(0, len(candidate_note_paths), batch_size):
+        batch = candidate_note_paths[i:i + batch_size]
         batch_results = await asyncio.gather(*[check_note_for_backlinks(np) for np in batch])
         
         for note_backlinks in batch_results:
@@ -507,24 +432,24 @@ async def find_broken_links(
     if ctx:
         ctx.info(f"Checking {len(notes_to_check)} notes...")
     
-    # Collect all links from all notes
+    # Collect all links from all notes. single_note reads directly (matches
+    # the pre-existing behavior of working even when the path isn't already
+    # vault-cache-known, e.g. missing a .md suffix vault.read_note fixes up).
+    # Directory/vault-wide scans instead pull each note's already-parsed
+    # links out of the cache (no disk I/O, no re-running the regex).
     all_links_by_note = {}
-    batch_size = 10
-    
-    async def get_note_links(note_path: str) -> Tuple[str, List[dict]]:
-        """Get all links from a note."""
+    if single_note:
         try:
-            note = await vault.read_note(note_path)
-            return note_path, extract_links_from_content(note.content)
+            note = await vault.read_note(single_note)
+            links = extract_links_from_content(note.content)
+            if links:
+                all_links_by_note[note.path] = links
         except Exception:
-            return note_path, []
-    
-    # Process notes in batches
-    for i in range(0, len(notes_to_check), batch_size):
-        batch = notes_to_check[i:i + batch_size]
-        batch_results = await asyncio.gather(*[get_note_links(np) for np in batch])
-        
-        for note_path, links in batch_results:
+            pass
+    else:
+        all_forward_links = await vault.cache.get_all_forward_links()
+        for note_path in notes_to_check:
+            links = all_forward_links.get(note_path)
             if links:
                 all_links_by_note[note_path] = links
     
@@ -576,3 +501,142 @@ async def find_broken_links(
             'path': single_note if single_note else directory if directory else '/'
         }
     }
+
+
+# ---------------------------------------------------------------------------
+# Write-time wikilink validation (spec section 4) — used by note_management's
+# create_note/update_note/edit_note_section and by daily_notes.add_daily_note.
+#
+# This is intentionally a *separate* extractor from extract_links_from_content
+# above: that one feeds get_backlinks/get_outgoing_links/find_broken_links and
+# must keep matching everything it always has (including embeds and links
+# inside code, for full backward compatibility). This one only looks at
+# genuine, prose [[wikilinks]] the user is about to write.
+# ---------------------------------------------------------------------------
+
+_FENCED_CODE_RE = re.compile(r'```.*?```', re.DOTALL)
+_INLINE_CODE_RE = re.compile(r'`[^`\n]+`')
+_WIKI_EMBED_RE = re.compile(r'!\[\[[^\]]*\]\]')
+_MARKDOWN_EMBED_RE = re.compile(r'!\[[^\]]*\]\([^)]*\)')
+_VALIDATION_WIKI_LINK_RE = re.compile(r'(?<!!)\[\[([^\]]*)\]\]')
+
+
+def _mask_ineligible_regions(content: str) -> str:
+    """Blank out (same length, so match spans stay aligned with the
+    original string) fenced code, inline code, and embeds, so the wikilink
+    validator never matches a link that only appears inside one of those.
+    """
+    def _blank(match: "re.Match[str]") -> str:
+        return " " * len(match.group(0))
+
+    masked = _FENCED_CODE_RE.sub(_blank, content)
+    masked = _INLINE_CODE_RE.sub(_blank, masked)
+    masked = _WIKI_EMBED_RE.sub(_blank, masked)
+    masked = _MARKDOWN_EMBED_RE.sub(_blank, masked)
+    return masked
+
+
+def _suggest_similar_notes(notes_index: Dict[str, str], targets: List[str], limit: int = 3) -> str:
+    """Up to `limit` fuzzy (case-insensitive substring/prefix) suggestions
+    per broken target, for a strict-policy error message."""
+    candidates = sorted({name[:-3] if name.endswith('.md') else name for name in notes_index.keys()})
+    parts = []
+    for target in targets:
+        target_lower = target.lower()
+        matches = [c for c in candidates if target_lower in c.lower()]
+        if matches:
+            parts.append(f"'{target}' -> maybe: {', '.join(matches[:limit])}")
+    return f" Suggestions: {'; '.join(parts)}." if parts else ""
+
+
+async def validate_wikilinks_for_write(vault, content: str) -> Tuple[str, List[str]]:
+    """
+    Validate (and, for OBSIDIAN_SLUG_STYLE=kebab, transparently fix up)
+    [[wikilinks]] in content that is about to be written.
+
+    Format errors — an empty target ([[]]) or nested/unbalanced brackets —
+    always raise ValueError, regardless of OBSIDIAN_WIKILINK_POLICY: the
+    format is malformed independent of whether broken targets are tolerated.
+    [[#Heading]] (no note name — a same-note heading reference) is valid and
+    skipped, it isn't a link to another note.
+
+    Broken *targets* (the note doesn't exist) are handled per
+    OBSIDIAN_WIKILINK_POLICY: strict raises ValueError with fuzzy
+    suggestions, warn returns the message in the warnings list (content is
+    still written), off is silent.
+
+    Returns (possibly-rewritten content, warnings). The content is rewritten
+    only when OBSIDIAN_SLUG_STYLE=kebab and a link target doesn't resolve
+    directly but its kebab-slug matches an existing note — the link is
+    rewritten to point at the real filename (keeping the user's original
+    text as the alias) so Obsidian can still resolve it.
+    """
+    masked = _mask_ineligible_regions(content)
+    matches = list(_VALIDATION_WIKI_LINK_RE.finditer(masked))
+    if not matches:
+        return content, []
+
+    notes_index = await build_vault_notes_index(vault)
+    warnings: List[str] = []
+    broken_targets: List[str] = []
+    replacements: Dict[str, str] = {}  # raw "[[...]]" text -> replacement text
+
+    for match in matches:
+        raw_inner = match.group(1)
+        if "[[" in raw_inner or "]]" in raw_inner:
+            raise ValueError(
+                f"Malformed wikilink {match.group(0)!r}: nested or unbalanced brackets. "
+                "Fix or remove it before saving."
+            )
+
+        target_part, _, alias = raw_inner.partition("|")
+        # Strip an optional "#Heading" suffix — only the note target is
+        # validated, per spec (the heading itself isn't checked).
+        note_ref = target_part.split("#", 1)[0].strip()
+
+        if not note_ref:
+            if target_part.strip().startswith("#"):
+                continue  # [[#Heading]] — same-note reference, always valid
+            raise ValueError(
+                f"Malformed wikilink {match.group(0)!r}: empty target. "
+                "Fix or remove it before saving."
+            )
+
+        lookup_name = note_ref if note_ref.endswith('.md') else note_ref + '.md'
+        resolved_path = notes_index.get(lookup_name) or notes_index.get(note_ref)
+        if not resolved_path and lookup_name in notes_index.values():
+            resolved_path = lookup_name
+
+        if not resolved_path and vault.slug_style == "kebab":
+            target_slug = slugify_kebab(note_ref)
+            if target_slug:
+                for name, real_path in notes_index.items():
+                    stem = name[:-3] if name.endswith('.md') else name
+                    if slugify_kebab(stem) == target_slug:
+                        resolved_path = real_path
+                        display = alias.strip() if alias else target_part.strip()
+                        real_stem = Path(real_path).stem
+                        replacements[match.group(0)] = f"[[{real_stem}|{display}]]"
+                        break
+
+        if not resolved_path:
+            broken_targets.append(note_ref)
+
+    new_content = content
+    for old, new in replacements.items():
+        new_content = new_content.replace(old, new)
+
+    if broken_targets:
+        if vault.wikilink_policy == "strict":
+            suggestions = _suggest_similar_notes(notes_index, broken_targets)
+            broken_list = ", ".join(f"[[{t}]]" for t in broken_targets)
+            raise ValueError(
+                f"Broken wikilink target(s): {broken_list}.{suggestions} "
+                "Create the target note first, fix the link text, or remove the link."
+            )
+        elif vault.wikilink_policy == "warn":
+            for target in broken_targets:
+                warnings.append(f"Wikilink target not found: [[{target}]]")
+        # "off": no-op — content is written as-is.
+
+    return new_content, warnings

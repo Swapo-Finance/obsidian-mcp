@@ -6,8 +6,33 @@ from fastmcp import Context
 from ..utils.filesystem import get_vault
 from ..utils import validate_note_path, sanitize_path, is_markdown_file
 from ..utils.validation import validate_tags
+from ..utils.vault_config import normalize_tag_kebab
 from ..models import Note, NoteMetadata, Tag
 from ..constants import ERROR_MESSAGES
+
+
+def _clean_tags(vault, tags: List[str]) -> List[str]:
+    """Strip the '#' prefix and surrounding whitespace from each tag; when
+    OBSIDIAN_TAG_STYLE=kebab, also kebab-normalize each ('/'-hierarchical)
+    tag, raising ValueError for one that has nothing alphanumeric left
+    (e.g. pure emoji) per spec section 1.
+    """
+    cleaned = []
+    for tag in tags:
+        stripped = tag.lstrip("#").strip()
+        if not stripped:
+            continue
+        if vault.tag_style == "kebab":
+            slug = normalize_tag_kebab(stripped)
+            if slug is None:
+                raise ValueError(
+                    f"Tag '{tag}' cannot be normalized to kebab-case (OBSIDIAN_TAG_STYLE=kebab). "
+                    "Each '/'-separated segment must contain at least one letter or digit."
+                )
+            cleaned.append(slug)
+        else:
+            cleaned.append(stripped)
+    return cleaned
 
 
 async def move_note(
@@ -735,19 +760,20 @@ async def add_tags(
     if not is_valid:
         raise ValueError(error)
     
-    # Clean tags (remove # prefix if present) - validation already does this
-    tags = [tag.lstrip("#").strip() for tag in tags if tag.strip()]
-    
+    vault = get_vault()
+
+    # Clean tags (remove # prefix if present; kebab-normalize when
+    # OBSIDIAN_TAG_STYLE=kebab)
+    tags = _clean_tags(vault, tags)
+
     if ctx:
         ctx.info(f"Adding tags to {path}: {tags}")
-    
-    vault = get_vault()
-    
+
     try:
         note = await vault.read_note(path)
     except FileNotFoundError:
         raise FileNotFoundError(ERROR_MESSAGES["note_not_found"].format(path=path))
-    
+
     # Parse frontmatter and update tags
     content = note.content
     updated_content = _update_frontmatter_tags(content, tags, "add")
@@ -817,19 +843,20 @@ async def update_tags(
     if not is_valid:
         raise ValueError(error)
     
-    # Clean tags (remove # prefix if present)
-    tags = [tag.lstrip("#").strip() for tag in tags if tag.strip()]
-    
+    vault = get_vault()
+
+    # Clean tags (remove # prefix if present; kebab-normalize when
+    # OBSIDIAN_TAG_STYLE=kebab)
+    tags = _clean_tags(vault, tags)
+
     if ctx:
         ctx.info(f"Updating tags for {path}: {tags} (merge={merge})")
-    
-    vault = get_vault()
-    
+
     try:
         note = await vault.read_note(path)
     except FileNotFoundError:
         raise FileNotFoundError(ERROR_MESSAGES["note_not_found"].format(path=path))
-    
+
     # Store previous tags
     previous_tags = note.metadata.tags.copy() if note.metadata.tags else []
     
@@ -909,19 +936,20 @@ async def remove_tags(
     if not is_valid:
         raise ValueError(error)
     
-    # Clean tags (remove # prefix if present) - validation already does this
-    tags = [tag.lstrip("#").strip() for tag in tags if tag.strip()]
-    
+    vault = get_vault()
+
+    # Clean tags (remove # prefix if present; kebab-normalize when
+    # OBSIDIAN_TAG_STYLE=kebab)
+    tags = _clean_tags(vault, tags)
+
     if ctx:
         ctx.info(f"Removing tags from {path}: {tags}")
-    
-    vault = get_vault()
-    
+
     try:
         note = await vault.read_note(path)
     except FileNotFoundError:
         raise FileNotFoundError(ERROR_MESSAGES["note_not_found"].format(path=path))
-    
+
     # Parse frontmatter and update tags
     content = note.content
     updated_content = _update_frontmatter_tags(content, tags, "remove")
@@ -1187,49 +1215,16 @@ async def list_tags(
         ctx.info("Collecting tags from vault...")
     
     vault = get_vault()
-    
-    # Dictionary to store tag counts and file paths
-    tag_counts = {}
-    tag_files = {} if include_files else None
-    
+
     try:
-        # Get all notes in the vault
-        all_notes = await vault.list_notes(recursive=True)
-        
+        # Sourced from the vault's tags index (see utils/vault_cache.py)
+        # instead of reading and re-parsing every note on every call.
+        tags_by_name = await vault.cache.get_tags_index()
+        tag_counts = {tag: len(paths) for tag, paths in tags_by_name.items()}
+
         if ctx:
-            ctx.info(f"Scanning {len(all_notes)} notes for tags...")
-        
-        # Process notes in batches for better performance
-        import asyncio
-        
-        # Adjust batch size based on vault size
-        batch_size = 50 if len(all_notes) > 1000 else 20
-        max_concurrent = asyncio.Semaphore(batch_size)
-        
-        async def process_note(note_info):
-            async with max_concurrent:
-                try:
-                    note = await vault.read_note(note_info["path"])
-                    if note and note.metadata and note.metadata.tags:
-                        return (note_info["path"], note.metadata.tags)
-                except Exception:
-                    return (note_info["path"], [])
-                return (note_info["path"], [])
-        
-        # Process all notes concurrently with semaphore limiting
-        tasks = [process_note(note_info) for note_info in all_notes]
-        results = await asyncio.gather(*tasks)
-        
-        # Count tags and collect file paths
-        for path, tags in results:
-            for tag in tags:
-                if tag:
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
-                    if include_files:
-                        if tag not in tag_files:
-                            tag_files[tag] = []
-                        tag_files[tag].append(path)
-        
+            ctx.info(f"Found {len(tag_counts)} unique tags across the vault...")
+
         # Format results
         if include_counts or include_files:
             tags = []
@@ -1237,8 +1232,8 @@ async def list_tags(
                 tag_item = {"name": tag}
                 if include_counts:
                     tag_item["count"] = count
-                if include_files and tag in tag_files:
-                    tag_item["files"] = sorted(tag_files[tag])
+                if include_files:
+                    tag_item["files"] = sorted(tags_by_name[tag])
                 tags.append(tag_item)
             
             # Sort based on preference
