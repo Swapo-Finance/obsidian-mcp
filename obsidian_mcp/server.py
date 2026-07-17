@@ -315,8 +315,8 @@ async def search_notes_tool(
         description="How much text to show around each match for context. Higher values show more surrounding content.",
         ge=10,
         le=500,
-        default=100
-    )] = 100,
+        default=20
+    )] = 20,
     max_results: Annotated[int, Field(
         description="Maximum number of results to return. Use smaller values for faster responses and larger values for comprehensive searches.",
         ge=1,
@@ -426,10 +426,10 @@ async def search_by_regex_tool(
     )] = None,
     context_length: Annotated[int, Field(
         description="Characters to show around matches",
-        default=100,
+        default=20,
         ge=10,
         le=500
-    )] = 100,
+    )] = 20,
     max_results: Annotated[int, Field(
         description="Maximum number of notes to return. Use smaller values for faster responses.",
         default=50,
@@ -486,10 +486,10 @@ async def search_by_property_tool(
     )] = "=",
     context_length: Annotated[int, Field(
         description="Characters of note content to include",
-        default=100,
+        default=20,
         ge=0,
         le=500
-    )] = 100,
+    )] = 20,
     ctx=None
 ):
     """
