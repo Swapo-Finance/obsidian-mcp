@@ -96,9 +96,9 @@ class ObsidianVault:
             "OBSIDIAN_SLUG_STYLE", ("kebab", "as-is"), "as-is"
         )
 
-        self.max_note_lines = int(os.getenv("OBSIDIAN_MAX_NOTE_LINES", "500"))
-        self.append_headroom_lines = int(os.getenv("OBSIDIAN_APPEND_HEADROOM_LINES", "100"))
-        self.cache_stat_ttl_seconds = int(os.getenv("OBSIDIAN_CACHE_STAT_TTL_SECONDS", "30"))
+        self.max_note_lines = self._read_int_env("OBSIDIAN_MAX_NOTE_LINES", 500)
+        self.append_headroom_lines = self._read_int_env("OBSIDIAN_APPEND_HEADROOM_LINES", 100)
+        self.cache_stat_ttl_seconds = self._read_int_env("OBSIDIAN_CACHE_STAT_TTL_SECONDS", 30)
 
         daily_dir_raw = os.getenv("OBSIDIAN_DAILY_DIR", "daily")
         normalized_daily = normalize_vault_relative_path(daily_dir_raw, self.vault_path)
@@ -134,6 +134,23 @@ class ObsidianVault:
             )
             return default
         return value
+
+    @staticmethod
+    def _read_int_env(name: str, default: int) -> int:
+        """Read an int-valued env var; fall back to `default` (with a
+        warning) if set but not a valid integer — config never crashes
+        the boot."""
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid %s=%r; must be an integer. Falling back to %d.",
+                name, raw, default,
+            )
+            return default
 
     def is_daily_note_path(self, relpath: str) -> bool:
         """True if relpath lives inside OBSIDIAN_DAILY_DIR — daily notes are
