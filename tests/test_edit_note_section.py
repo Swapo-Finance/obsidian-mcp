@@ -3,6 +3,7 @@
 
 import pytest
 import pytest_asyncio
+import unicodedata
 from pathlib import Path
 import tempfile
 import shutil
@@ -263,3 +264,124 @@ Just a simple note with one section.
         # Verify content
         content = Path(test_vault, "structured.md").read_text()
         assert content.endswith("Final thoughts.\n\nMore final thoughts.\n")
+
+    @pytest_asyncio.fixture
+    async def accented_vault_factory(self):
+        """Factory fixture: build a temp vault with an accented-heading note
+        written in a caller-chosen Unicode normalization form (NFC or NFD).
+        Mirrors the real-world scenario where a note saved by an app that
+        writes NFD-decomposed text (common on macOS) is edited by a caller
+        that types/generates section identifiers in NFC (the common form for
+        JSON/tool-call arguments). Returns the temp vault dir path."""
+        temp_dir = tempfile.mkdtemp(prefix="obsidian_test_accents_")
+
+        init_vault(temp_dir)
+
+        def write(form: str) -> str:
+            raw = (
+                "# Nota\n\n"
+                "## Decisões\n\n"
+                "Conteúdo inicial de decisões.\n\n"
+                "## Problemas\n\n"
+                "Conteúdo inicial de problemas.\n\n"
+                "## Próximos passos\n\n"
+                "Conteúdo inicial de próximos passos.\n\n"
+                "### Ação imediata\n\n"
+                "Conteúdo inicial de ação imediata.\n"
+            )
+            normalized = unicodedata.normalize(form, raw)
+            note_path = Path(temp_dir, "accented.md")
+            note_path.write_text(normalized, encoding="utf-8")
+            # Sanity: confirm the file actually landed in the requested form,
+            # otherwise the test would silently stop testing what it claims to.
+            on_disk = note_path.read_text(encoding="utf-8")
+            assert on_disk == normalized
+            return temp_dir
+
+        yield write
+
+        shutil.rmtree(temp_dir)
+
+    @pytest.mark.asyncio
+    async def test_accented_heading_nfd_file_nfc_identifier(self, accented_vault_factory):
+        """File on disk is NFD (decomposed, common on macOS); the
+        section_identifier argument is NFC (the typical typed/JSON form).
+        Regression test: previously this raised 'Section not found' because
+        the raw comparison did not reconcile the two normalization forms."""
+        temp_dir = accented_vault_factory("NFD")
+
+        nfc_identifier = unicodedata.normalize("NFC", "## Decisões")
+        result = await edit_note_section(
+            path="accented.md",
+            section_identifier=nfc_identifier,
+            content="Marcador NFC contra arquivo NFD.",
+            operation="append_to_section"
+        )
+
+        assert result["success"] is True
+        assert result["section_found"] is True
+
+        content = Path(temp_dir, "accented.md").read_text(encoding="utf-8")
+        assert "Marcador NFC contra arquivo NFD." in content
+
+    @pytest.mark.asyncio
+    async def test_accented_heading_nfc_file_nfd_identifier(self, accented_vault_factory):
+        """Symmetric case: file on disk is NFC, section_identifier argument
+        is NFD. Must also match -- the fix normalizes both sides."""
+        temp_dir = accented_vault_factory("NFC")
+
+        nfd_identifier = unicodedata.normalize("NFD", "## Próximos passos")
+        result = await edit_note_section(
+            path="accented.md",
+            section_identifier=nfd_identifier,
+            content="Marcador NFD contra arquivo NFC.",
+            operation="append_to_section"
+        )
+
+        assert result["success"] is True
+        assert result["section_found"] is True
+
+        content = Path(temp_dir, "accented.md").read_text(encoding="utf-8")
+        assert "Marcador NFD contra arquivo NFC." in content
+
+    @pytest.mark.asyncio
+    async def test_accented_nested_heading_nfd_file(self, accented_vault_factory):
+        """Hierarchical case: an H3 accented heading nested under an H2,
+        file saved as NFD, identifier passed as NFC. Confirms the fix also
+        covers nested/hierarchical sections, not just top-level ones."""
+        temp_dir = accented_vault_factory("NFD")
+
+        nfc_identifier = unicodedata.normalize("NFC", "### Ação imediata")
+        result = await edit_note_section(
+            path="accented.md",
+            section_identifier=nfc_identifier,
+            content="Marcador NFC contra H3 aninhado em arquivo NFD.",
+            operation="append_to_section"
+        )
+
+        assert result["success"] is True
+        assert result["section_found"] is True
+
+        content = Path(temp_dir, "accented.md").read_text(encoding="utf-8")
+        assert "Marcador NFC contra H3 aninhado em arquivo NFD." in content
+
+    @pytest.mark.asyncio
+    async def test_unaccented_heading_still_matches_nfd_file(self, accented_vault_factory):
+        """Control case: a heading with no accented characters must keep
+        matching regardless of the file's normalization form -- proves the
+        fix is scoped to Unicode composition and doesn't change behavior
+        for plain ASCII headings."""
+        temp_dir = accented_vault_factory("NFD")
+
+        result = await edit_note_section(
+            path="accented.md",
+            section_identifier="## Problemas",
+            content="Marcador de controle sem acento.",
+            operation="append_to_section"
+        )
+
+        assert result["success"] is True
+        assert result["section_found"] is True
+
+        content = Path(temp_dir, "accented.md").read_text(encoding="utf-8")
+        assert "Marcador de controle sem acento." in content
