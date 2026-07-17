@@ -326,6 +326,14 @@ async def search_notes_tool(
         le=500,
         default=50
     )] = 50,
+    mode: Annotated[Optional[Literal["content", "index", "auto"]], Field(
+        description="Result shape override. 'content': a text snippet per result (today's default shape). "
+                     "'index': lightweight {path, name, description, score, match_type} from the vault's cache, "
+                     "no snippet — read_note the ones that matter. 'auto' (server default): index once the "
+                     "result count passes OBSIDIAN_SEARCH_INDEX_THRESHOLD, else content. Leave unset to use the "
+                     "server's configured default.",
+        default=None
+    )] = None,
     ctx=None
 ):
     """
@@ -369,7 +377,7 @@ async def search_notes_tool(
         Response includes match_type field: "filename" or "content".
     """
     try:
-        return await search_notes(query, context_length, max_results, ctx)
+        return await search_notes(query, context_length, max_results, mode, ctx)
     except ValueError as e:
         raise ToolError(str(e))
     except Exception as e:
@@ -392,6 +400,12 @@ async def search_by_date_tool(
         description="'within' = all notes in the last N days, 'exactly' = only notes from exactly N days ago",
         default="within"
     )] = "within",
+    mode: Annotated[Optional[Literal["content", "index", "auto"]], Field(
+        description="Result shape override. 'index' adds each result's cached name/description (no snippet to "
+                     "strip here). 'auto' (server default): index once the result count passes "
+                     "OBSIDIAN_SEARCH_INDEX_THRESHOLD. Leave unset to use the server's configured default.",
+        default=None
+    )] = None,
     ctx=None
 ):
     """
@@ -410,7 +424,7 @@ async def search_by_date_tool(
         Notes matching the date criteria with paths and timestamps
     """
     try:
-        return await search_by_date(date_type, days_ago, operator, ctx)
+        return await search_by_date(date_type, days_ago, operator, mode, ctx)
     except ValueError as e:
         raise ToolError(str(e))
     except Exception as e:
@@ -439,6 +453,13 @@ async def search_by_regex_tool(
         ge=1,
         le=200
     )] = 50,
+    mode: Annotated[Optional[Literal["content", "index", "auto"]], Field(
+        description="Result shape override. 'index': lightweight {path, name, description, score, match_type} "
+                     "(match_count doubles as score) instead of per-match text snippets. 'auto' (server default): "
+                     "index once the result count passes OBSIDIAN_SEARCH_INDEX_THRESHOLD. Leave unset to use the "
+                     "server's configured default.",
+        default=None
+    )] = None,
     ctx=None
 ):
     """
@@ -465,7 +486,7 @@ async def search_by_regex_tool(
         Notes containing regex matches with match details and context
     """
     try:
-        return await search_by_regex(pattern, flags, context_length, max_results, ctx)
+        return await search_by_regex(pattern, flags, context_length, max_results, mode, ctx)
     except ValueError as e:
         raise ToolError(str(e))
     except Exception as e:
@@ -493,6 +514,13 @@ async def search_by_property_tool(
         ge=0,
         le=500
     )] = 20,
+    mode: Annotated[Optional[Literal["content", "index", "auto"]], Field(
+        description="Result shape override. 'index': lightweight {path, name, description, score, match_type, "
+                     "property_value} instead of a text snippet (property_value is always kept — it's the point "
+                     "of this search). 'auto' (server default): index once the result count passes "
+                     "OBSIDIAN_SEARCH_INDEX_THRESHOLD. Leave unset to use the server's configured default.",
+        default=None
+    )] = None,
     ctx=None
 ):
     """
@@ -530,7 +558,7 @@ async def search_by_property_tool(
         Notes matching the property criteria with values displayed
     """
     try:
-        return await search_by_property(property_name, value, operator, context_length, ctx)
+        return await search_by_property(property_name, value, operator, context_length, mode, ctx)
     except ValueError as e:
         raise ToolError(str(e))
     except Exception as e:

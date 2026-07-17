@@ -261,7 +261,17 @@ async def get_backlinks(
     
     if ctx:
         ctx.info(f"Found {len(backlinks)} backlinks")
-    
+
+    # Light enrichment (spec section 10.4's closing sentence): add the
+    # linking note's cached name/description to each finding, from the
+    # VaultCache — no extra disk reads.
+    if backlinks:
+        all_meta = await vault.cache.get_all_note_meta()
+        for backlink in backlinks:
+            meta = all_meta.get(backlink['source_path'], {})
+            backlink['name'] = meta.get('name', '')
+            backlink['description'] = meta.get('description', '')
+
     # Return standardized analysis results structure
     return {
         'findings': backlinks,
@@ -483,10 +493,19 @@ async def find_broken_links(
     
     if ctx:
         ctx.info(f"Found {len(broken_links)} broken links in {len(affected_notes_set)} notes")
-    
+
     # Sort broken links by source path
     broken_links.sort(key=lambda x: x['source_path'])
-    
+
+    # Light enrichment (spec section 10.4's closing sentence): add the
+    # linking note's cached name/description to each finding.
+    if broken_links:
+        all_meta = await vault.cache.get_all_note_meta()
+        for broken_link in broken_links:
+            meta = all_meta.get(broken_link['source_path'], {})
+            broken_link['name'] = meta.get('name', '')
+            broken_link['description'] = meta.get('description', '')
+
     # Return standardized analysis results structure
     return {
         'findings': broken_links,

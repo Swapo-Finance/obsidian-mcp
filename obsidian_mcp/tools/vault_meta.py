@@ -167,6 +167,30 @@ async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
             "re-stats the vault for changes made outside this MCP server. 0 re-stats every access.",
             "30",
         ),
+        _env_row(
+            "OBSIDIAN_REQUIRE_FRONTMATTER", "bool", "true", str(vault.require_frontmatter),
+            "On (the default): create_note and update_note (replace / create_if_not_exists) force "
+            "frontmatter 'name' to match the filename, and require a non-empty 'description' "
+            "(missing/empty raises a ToolError instead of writing). Exempt: edit_note_section, "
+            "update_note append, and add_daily_note's own append (its file-creation path seeds "
+            "name/description automatically instead).",
+            "false",
+        ),
+        _env_row(
+            "OBSIDIAN_SEARCH_RESULT_MODE", "content|index|auto", "auto", vault.search_result_mode,
+            "Shape of search_notes/search_by_regex/search_by_property/search_by_date results. "
+            "content: a text snippet per result (pre-10.4 behavior). index: lightweight "
+            "{path, name, description, score, match_type} from the cache, no snippet. auto: index "
+            "once a search's result count passes OBSIDIAN_SEARCH_INDEX_THRESHOLD, else content. "
+            "Any of these tools' own `mode` parameter overrides this per call.",
+            "index",
+        ),
+        _env_row(
+            "OBSIDIAN_SEARCH_INDEX_THRESHOLD", "int", "10", str(vault.search_index_threshold),
+            "Result-count cutoff used by OBSIDIAN_SEARCH_RESULT_MODE=auto (or a per-call mode='auto') "
+            "to decide index vs. content mode.",
+            "10",
+        ),
     ]
 
     tools = [
