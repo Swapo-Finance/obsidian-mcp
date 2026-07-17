@@ -24,6 +24,20 @@ logger = logging.getLogger(__name__)
 # Path normalization (spec section 2)
 # ---------------------------------------------------------------------------
 
+# Windows absolute paths: drive-letter ("C:\..." / "C:/...") or UNC
+# ("\\server\share\..."). pathlib.Path.is_absolute() only recognizes a
+# leading "/" (or "~"), so on a POSIX host these silently fall through to
+# the vault-relative branch below instead of being rejected as
+# absolute-and-outside-the-vault. Must be matched against the raw,
+# pre-"\\"->"/"-normalization text: UNC's leading "\\\\" disappears after
+# that replace, becoming indistinguishable from it.
+_WINDOWS_ABS_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+
+
+def _is_windows_absolute_path(raw_text: str) -> bool:
+    return bool(_WINDOWS_ABS_RE.match(raw_text))
+
+
 def normalize_vault_relative_path(raw: str, vault_path: Path) -> Optional[str]:
     """Accept vault-relative, vault-basename-prefixed, or absolute/`~` paths
     and return the canonical POSIX path relative to the vault root.
@@ -46,7 +60,7 @@ def normalize_vault_relative_path(raw: str, vault_path: Path) -> Optional[str]:
     # turns a real absolute path into a bogus vault-relative one instead of
     # resolving it and checking vault membership.
     candidate = Path(text)
-    if candidate.is_absolute() or text.startswith("~"):
+    if candidate.is_absolute() or text.startswith("~") or _is_windows_absolute_path(raw.strip()):
         resolved = Path(text).expanduser().resolve()
     else:
         text = text.strip("/")
@@ -79,7 +93,7 @@ def resolve_path_maybe_outside_vault(raw: str, vault_path: Path) -> Path:
         raise ValueError("Empty path")
 
     candidate = Path(text)
-    if candidate.is_absolute() or text.startswith("~"):
+    if candidate.is_absolute() or text.startswith("~") or _is_windows_absolute_path((raw or "").strip()):
         return Path(text).expanduser().resolve()
 
     stripped = text.strip("/")

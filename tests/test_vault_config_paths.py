@@ -88,6 +88,25 @@ class TestNormalizeVaultRelativePathForms:
     def test_none_input_returns_none(self, tmp_path):
         assert normalize_vault_relative_path(None, tmp_path) is None
 
+    def test_windows_drive_letter_absolute_is_none(self, tmp_path):
+        # A Windows drive-letter path is absolute-and-foreign on any POSIX
+        # host running this server. pathlib.is_absolute() alone doesn't
+        # recognize it (no leading "/"), so without explicit detection this
+        # used to fall through as a nonsense vault-relative path instead of
+        # being rejected.
+        raw = r"C:\Users\x\vaults\myvault\01-projects"
+        assert normalize_vault_relative_path(raw, tmp_path) is None
+
+    def test_windows_unc_absolute_is_none(self, tmp_path):
+        raw = r"\\server\share\01-projects"
+        assert normalize_vault_relative_path(raw, tmp_path) is None
+
+    def test_vault_relative_folder_with_no_colon_unaffected(self, tmp_path):
+        # Regression guard for the drive-letter regex: a real vault-relative
+        # folder has no ":" in 2nd-character position and must stay
+        # vault-relative, not get misdetected as a Windows absolute path.
+        assert normalize_vault_relative_path("04-resources/artigos", tmp_path) == "04-resources/artigos"
+
 
 class TestResolvePathMaybeOutsideVault:
     """Templates are allowed to live outside the vault (shared across
@@ -110,6 +129,14 @@ class TestResolvePathMaybeOutsideVault:
     def test_empty_path_raises(self, tmp_path):
         with pytest.raises(ValueError):
             resolve_path_maybe_outside_vault("", tmp_path)
+
+    def test_windows_drive_letter_not_glued_under_vault_path(self, tmp_path):
+        # Pre-fix bug: a Windows drive-letter path fell through to the
+        # vault-relative branch and got glued under vault_path as a bogus
+        # nested path (e.g. "<vault>/C:/templates/shared.md") instead of
+        # being resolved as a (foreign) absolute path.
+        resolved = resolve_path_maybe_outside_vault(r"C:\templates\shared.md", tmp_path)
+        assert not str(resolved).startswith(str(tmp_path.resolve()))
 
 
 class TestParseFolderTemplatesFailSafe:
