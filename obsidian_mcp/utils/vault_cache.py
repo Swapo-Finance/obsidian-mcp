@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from .links import extract_links_from_content
+from .vault_config import derive_note_description, derive_note_name
 
 
 class VaultCache:
@@ -47,6 +48,7 @@ class VaultCache:
         self._all_relpaths: Set[str] = set()
         self._tags_index: Dict[str, Set[str]] = {}  # tag -> {relpaths}
         self._forward_links: Dict[str, List[dict]] = {}  # relpath -> extract_links_from_content() result
+        self._note_meta: Dict[str, Dict[str, str]] = {}  # relpath -> {"name", "description"}
 
     # ------------------------------------------------------------------
     # Public accessors — each ensures freshness before reading.
@@ -80,6 +82,28 @@ class VaultCache:
     async def get_all_forward_links(self) -> Dict[str, List[dict]]:
         await self._ensure_fresh()
         return {relpath: list(links) for relpath, links in self._forward_links.items()}
+
+    async def get_note_meta(self, relpath: str) -> Dict[str, str]:
+        """{'name', 'description'} for one note (spec section 10.2), parsed
+        once at index time and kept fresh via the same incremental/stat-diff
+        paths as the rest of the cache. A relpath that isn't indexed (races
+        with a concurrent delete, mostly) falls back to the same
+        filename-stem/empty-description defaults derive_note_name/
+        derive_note_description use for a note with no frontmatter.
+        """
+        await self._ensure_fresh()
+        meta = self._note_meta.get(relpath)
+        if meta is not None:
+            return dict(meta)
+        return {"name": derive_note_name(relpath, {}), "description": ""}
+
+    async def get_all_note_meta(self) -> Dict[str, Dict[str, str]]:
+        """Every indexed note's {'name', 'description'} in one call — the
+        batch counterpart to get_note_meta, used by the search index mode
+        (spec section 10.4) to enrich a results list without N+1 lookups.
+        """
+        await self._ensure_fresh()
+        return {relpath: dict(meta) for relpath, meta in self._note_meta.items()}
 
     # ------------------------------------------------------------------
     # Mutation hook — called by ObsidianVault.write_note / delete_note.
@@ -147,6 +171,7 @@ class VaultCache:
         self._all_relpaths.clear()
         self._tags_index.clear()
         self._forward_links.clear()
+        self._note_meta.clear()
         self._stat_snapshot.clear()
 
         for relpath, stat in self._iter_md_files():
@@ -205,10 +230,15 @@ class VaultCache:
 
         self._all_relpaths.add(relpath)
         self._forward_links[relpath] = extract_links_from_content(content)
+        self._note_meta[relpath] = {
+            "name": derive_note_name(relpath, frontmatter),
+            "description": derive_note_description(frontmatter, clean_content),
+        }
 
     def _deindex_note(self, relpath: str) -> None:
         self._all_relpaths.discard(relpath)
         self._forward_links.pop(relpath, None)
+        self._note_meta.pop(relpath, None)
 
         empty_tags = []
         for tag, paths in self._tags_index.items():
