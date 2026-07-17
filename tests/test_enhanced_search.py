@@ -46,11 +46,12 @@ async def test_enhanced_default_search():
     mock_vault.read_note = AsyncMock(side_effect=mock_read_note)
     mock_vault.get_last_search_metadata = MagicMock(return_value={"truncated": False, "total_count": 2})
     
-    # Import after mocking to ensure we use mocked vault
-    from obsidian_mcp.utils import filesystem
-    original_get_vault = filesystem.get_vault
-    filesystem.get_vault = lambda: mock_vault
-    
+    # search_notes did `from ..utils.filesystem import get_vault`, so it holds
+    # its own reference in the tool module's namespace. Patch it there.
+    from obsidian_mcp.tools import search_discovery
+    original_get_vault = search_discovery.get_vault
+    search_discovery.get_vault = lambda: mock_vault
+
     try:
         # Test the enhanced search
         results = await search_notes("tag refactor", context_length=100, max_results=10)
@@ -79,7 +80,7 @@ async def test_enhanced_default_search():
         
     finally:
         # Restore original
-        filesystem.get_vault = original_get_vault
+        search_discovery.get_vault = original_get_vault
 
 
 if __name__ == "__main__":

@@ -361,7 +361,7 @@ async def _search_by_property(vault, property_query: str, context_length: int) -
 
 async def search_notes(
     query: str,
-    context_length: int = 100,
+    context_length: int = 20,
     max_results: int = 50,
     ctx=None
 ) -> dict:
@@ -398,7 +398,7 @@ async def search_notes(
     
     Args:
         query: Search query with optional prefix (path:, tag:, property:, or plain text)
-        context_length: Number of characters to show around matches (default: 100)
+        context_length: Number of characters to show around matches (default: 20)
         ctx: MCP context for progress reporting
         
     Returns:
@@ -480,7 +480,14 @@ async def search_notes(
         
         # Get search metadata if available (for content searches)
         metadata = vault.get_last_search_metadata() if not (query.startswith("tag:") or query.startswith("path:") or query.startswith("property:")) else None
-        
+
+        # total_count is the true number of matches found by the vault. The tool
+        # over-fetches (max_results * 2) for merging and then caps the displayed
+        # results to max_results, so the vault's own "truncated" flag reflects the
+        # doubled limit, not what we actually return. Recompute truncated from the
+        # displayed count vs. the true total so it is accurate.
+        total_count = metadata.get("total_count", len(results)) if metadata else len(results)
+
         # Return standardized search results structure
         response = {
             "results": results,
@@ -490,8 +497,8 @@ async def search_notes(
                 "context_length": context_length,
                 "type": "tag" if query.startswith("tag:") else "path" if query.startswith("path:") else "property" if query.startswith("property:") else "content"
             },
-            "truncated": metadata.get("truncated", False) if metadata else False,
-            "total_count": metadata.get("total_count", len(results)) if metadata else len(results)
+            "truncated": total_count > len(results),
+            "total_count": total_count
         }
         
         # Add message if results are truncated
@@ -655,7 +662,7 @@ async def search_by_property(
     property_name: str,
     value: Optional[str] = None,
     operator: str = "=",
-    context_length: int = 100,
+    context_length: int = 20,
     ctx=None
 ) -> dict:
     """
@@ -950,7 +957,7 @@ async def list_folders(
 async def search_by_regex(
     pattern: str,
     flags: Optional[List[str]] = None,
-    context_length: int = 100,
+    context_length: int = 20,
     max_results: int = 50,
     ctx=None
 ) -> dict:
@@ -973,7 +980,7 @@ async def search_by_regex(
                - "ignorecase" or "i": Case-insensitive matching
                - "multiline" or "m": ^ and $ match line boundaries  
                - "dotall" or "s": . matches newlines
-        context_length: Number of characters to show around matches (default: 100)
+        context_length: Number of characters to show around matches (default: 20)
         max_results: Maximum number of results to return (default: 50)
         ctx: MCP context for progress reporting
         

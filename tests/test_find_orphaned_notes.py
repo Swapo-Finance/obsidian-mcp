@@ -19,36 +19,41 @@ async def test_find_orphaned_notes_no_backlinks():
         {"path": "Note3.md"}
     ])
     
-    # Mock read_note
+    # Mock read_note (NoteMetadata.modified is a datetime)
     async def mock_read_note(path):
         mock_note = MagicMock()
         mock_note.path = path
-        mock_note.metadata.modified = datetime.now().isoformat()
+        mock_note.metadata.modified = datetime.now()
         mock_note.metadata.size = 100
         mock_note.metadata.word_count = 50
         mock_note.metadata.tags = ["test"]
         mock_note.metadata.frontmatter = {"title": "Test"}
         return mock_note
-    
+
     mock_vault.read_note = AsyncMock(side_effect=mock_read_note)
-    
-    # Mock get_backlinks - Note2 has backlinks, others don't
-    async def mock_get_backlinks(path):
+
+    # Mock the module-level get_backlinks - Note2 has backlinks, others don't.
+    # get_backlinks returns {"findings": [...]}, which is what the tool reads.
+    async def mock_get_backlinks(path, *args, **kwargs):
         if path == "Note2.md":
-            return [{"source": "Note1.md", "context": "Links to [[Note2]]"}]
-        return []
-    
-    mock_vault.get_backlinks = AsyncMock(side_effect=mock_get_backlinks)
-    
-    # Import after mocking
-    from obsidian_mcp.utils import filesystem
-    original_get_vault = filesystem.get_vault
-    filesystem.get_vault = lambda: mock_vault
-    
+            return {"findings": [{"source_path": "Note1.md", "link_text": "Note2", "link_type": "wiki"}]}
+        return {"findings": []}
+
+    # find_orphaned_notes did `from ..utils.filesystem import get_vault` and
+    # `from .link_management import get_backlinks`, so patch both names in the
+    # tool module's own namespace.
+    import sys
+    from obsidian_mcp.tools.find_orphaned_notes import find_orphaned_notes
+    # tools/__init__ re-exports the `find_orphaned_notes` function, which shadows
+    # the submodule of the same name in the package namespace. Grab the real
+    # module object from sys.modules so we can patch its module-level names.
+    fon_module = sys.modules['obsidian_mcp.tools.find_orphaned_notes']
+    original_get_vault = fon_module.get_vault
+    original_get_backlinks = fon_module.get_backlinks
+    fon_module.get_vault = lambda: mock_vault
+    fon_module.get_backlinks = AsyncMock(side_effect=mock_get_backlinks)
+
     try:
-        # Import the function after mocking
-        from obsidian_mcp.tools.find_orphaned_notes import find_orphaned_notes
-        
         # Test finding orphaned notes
         result = await find_orphaned_notes(
             orphan_type="no_backlinks",
@@ -73,9 +78,10 @@ async def test_find_orphaned_notes_no_backlinks():
             assert "word_count" in note
         
         print("✓ Find orphaned notes (no backlinks) test passed!")
-        
+
     finally:
-        filesystem.get_vault = original_get_vault
+        fon_module.get_vault = original_get_vault
+        fon_module.get_backlinks = original_get_backlinks
 
 
 @pytest.mark.asyncio
@@ -83,16 +89,15 @@ async def test_find_orphaned_notes_with_age_filter():
     """Test finding orphaned notes with age filter."""
     mock_vault = MagicMock()
     
-    # Create notes with different ages
-    # Use dates that will work regardless of current time
-    old_date = "2023-01-01T10:00:00Z"  # Definitely older than 30 days
-    recent_date = datetime.now().isoformat()  # Current time
-    
+    # Create notes with different ages (NoteMetadata.modified is a datetime)
+    old_date = datetime(2023, 1, 1, 10, 0, 0)  # Definitely older than 30 days
+    recent_date = datetime.now()  # Current time
+
     mock_vault.list_notes = AsyncMock(return_value=[
         {"path": "OldNote.md"},
         {"path": "RecentNote.md"}
     ])
-    
+
     async def mock_read_note(path):
         mock_note = MagicMock()
         mock_note.path = path
@@ -102,32 +107,38 @@ async def test_find_orphaned_notes_with_age_filter():
         mock_note.metadata.tags = []
         mock_note.metadata.frontmatter = {}
         return mock_note
-    
+
     mock_vault.read_note = AsyncMock(side_effect=mock_read_note)
-    mock_vault.get_backlinks = AsyncMock(return_value=[])  # All orphaned
-    
-    from obsidian_mcp.utils import filesystem
-    original_get_vault = filesystem.get_vault
-    filesystem.get_vault = lambda: mock_vault
-    
+
+    # Patch get_vault and get_backlinks in the tool module's namespace.
+    # get_backlinks returns {"findings": [...]}; empty findings => all orphaned.
+    import sys
+    from obsidian_mcp.tools.find_orphaned_notes import find_orphaned_notes
+    # tools/__init__ re-exports the `find_orphaned_notes` function, which shadows
+    # the submodule of the same name in the package namespace. Grab the real
+    # module object from sys.modules so we can patch its module-level names.
+    fon_module = sys.modules['obsidian_mcp.tools.find_orphaned_notes']
+    original_get_vault = fon_module.get_vault
+    original_get_backlinks = fon_module.get_backlinks
+    fon_module.get_vault = lambda: mock_vault
+    fon_module.get_backlinks = AsyncMock(return_value={"findings": []})
+
     try:
-        # Import the function after mocking
-        from obsidian_mcp.tools.find_orphaned_notes import find_orphaned_notes
-        
         # Test with 30 day age filter
         result = await find_orphaned_notes(
             orphan_type="no_backlinks",
             min_age_days=30
         )
-        
+
         # Should only find the old note
         assert result["count"] == 1
         assert result["orphaned_notes"][0]["path"] == "OldNote.md"
-        
+
         print("✓ Find orphaned notes with age filter test passed!")
-        
+
     finally:
-        filesystem.get_vault = original_get_vault
+        fon_module.get_vault = original_get_vault
+        fon_module.get_backlinks = original_get_backlinks
 
 
 if __name__ == "__main__":

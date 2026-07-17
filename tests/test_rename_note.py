@@ -83,7 +83,7 @@ async def test_rename_note_with_link_updates(mock_get_vault):
     )
     
     # Mock get_backlinks to return our linking notes
-    with patch('obsidian_mcp.tools.organization.get_backlinks') as mock_backlinks:
+    with patch('obsidian_mcp.tools.link_management.get_backlinks') as mock_backlinks:
         mock_backlinks.return_value = {
             'findings': [
                 {'source_path': 'Daily/2024-01-15.md', 'link_text': 'Old Name', 'link_type': 'wiki'},
@@ -196,7 +196,7 @@ async def test_rename_note_preserves_aliases(mock_get_vault):
         metadata=NoteMetadata()
     )
     
-    with patch('obsidian_mcp.tools.organization.get_backlinks') as mock_backlinks:
+    with patch('obsidian_mcp.tools.link_management.get_backlinks') as mock_backlinks:
         mock_backlinks.return_value = {
             'findings': [
                 {'source_path': 'Index.md', 'link_text': 'User Friendly Name', 'link_type': 'wiki'}
@@ -241,7 +241,7 @@ Here are various link formats:
         metadata=NoteMetadata()
     )
     
-    with patch('obsidian_mcp.tools.organization.get_backlinks') as mock_backlinks:
+    with patch('obsidian_mcp.tools.link_management.get_backlinks') as mock_backlinks:
         # Return all the different link types found
         mock_backlinks.return_value = {
             'findings': [
@@ -271,7 +271,12 @@ Here are various link formats:
         assert "[[Updated Note.md|Another Name]]" in updated_content
         assert "[[Note]]" not in updated_content
         assert "[[Note.md]]" not in updated_content
-        assert result["details"]["links_updated"] == 6
+        # Complex.md actually contains 7 wiki-links to "Note": 3 bare [[Note]]
+        # (Basic, in-sentence, multiple-on-line), [[Note.md]], [[Note|Display Name]],
+        # [[Note.md|Another Name]], and [[Note|see this]]. rename_note re-scans the
+        # content and updates every one, so links_updated is 7 (the mocked findings
+        # list only enumerates 6, but the count comes from real content replacements).
+        assert result["details"]["links_updated"] == 7
 
 
 if __name__ == "__main__":

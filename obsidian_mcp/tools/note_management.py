@@ -1,6 +1,7 @@
 """Note management tools for Obsidian MCP server."""
 
 import asyncio
+import functools
 import re
 import unicodedata
 from typing import Optional, List, Dict, Any
@@ -10,6 +11,21 @@ from ..utils import validate_note_path, sanitize_path
 from ..utils.validation import validate_content
 from ..models import Note
 from ..constants import ERROR_MESSAGES
+
+
+def _serialize_note_writes(func):
+    """Hold the vault-wide write lock for the whole call so concurrent
+    read-modify-write operations on the same note cannot lose an update
+    (e.g. two edit_note_section calls dispatched together against one note).
+
+    functools.wraps sets __wrapped__, so inspect.signature (and therefore the
+    FastMCP tool schema) still reflects the original parameters."""
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        vault = get_vault()
+        async with vault.write_lock:
+            return await func(*args, **kwargs)
+    return wrapper
 
 
 async def read_note(
@@ -172,9 +188,10 @@ async def _extract_and_load_images(
     return images
 
 
+@_serialize_note_writes
 async def create_note(
-    path: str, 
-    content: str, 
+    path: str,
+    content: str,
     overwrite: bool = False,
     ctx: Optional[Context] = None
 ) -> dict:
@@ -249,6 +266,7 @@ async def create_note(
     }
 
 
+@_serialize_note_writes
 async def update_note(
     path: str,
     content: str,
@@ -354,6 +372,7 @@ async def update_note(
     }
 
 
+@_serialize_note_writes
 async def edit_note_section(
     path: str,
     section_identifier: str,
@@ -542,6 +561,7 @@ async def edit_note_section(
     }
 
 
+@_serialize_note_writes
 async def delete_note(path: str, ctx: Optional[Context] = None) -> dict:
     """
     Delete a note from the vault.
