@@ -19,6 +19,22 @@ import pytest
 from obsidian_mcp.tools.note_management import create_note, read_note
 from obsidian_mcp.tools.organization import add_tags, remove_tags, update_tags
 from obsidian_mcp.utils.filesystem import init_vault
+from obsidian_mcp.utils.vault_config import normalize_tag_kebab, slugify_kebab
+
+
+class TestCedillaTransliteration:
+    """test_onda1_sanity.py's TestSlugifyKebab covers á/ã (acute, tilde)
+    thoroughly but never exercises ç (cedilla) — named explicitly alongside
+    á/ã in the spec. NFD-decomposing "ç" yields "c" + COMBINING CEDILLA
+    (a different Unicode combining class than the acute/tilde marks already
+    tested), so this isn't fully redundant with the existing coverage."""
+
+    def test_cedilla_strips_to_plain_c(self):
+        assert slugify_kebab("Ação") == "acao"
+        assert slugify_kebab("Coração") == "coracao"
+
+    def test_cedilla_in_hierarchical_tag_segment(self):
+        assert normalize_tag_kebab("Emoção/Alegria") == "emocao/alegria"
 
 
 @pytest.fixture
