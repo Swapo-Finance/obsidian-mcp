@@ -4,13 +4,131 @@ import asyncio
 import functools
 import re
 import unicodedata
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from fastmcp import Context
 from ..utils.filesystem import get_vault
 from ..utils import validate_note_path, sanitize_path
 from ..utils.validation import validate_content
+from ..utils.vault_config import (
+    check_note_size_policy,
+    check_template_conformance,
+    count_lines,
+    slugify_kebab,
+)
 from ..models import Note
 from ..constants import ERROR_MESSAGES
+from .link_management import validate_wikilinks_for_write
+
+
+def apply_slug_style_to_path(vault, path: str) -> str:
+    """If OBSIDIAN_SLUG_STYLE=kebab, kebab-slugify the note's filename (not
+    its folder path — folder names are left as the user/template chose)
+    so filenames/links stay portable ASCII (spec section 1, item a).
+    Raises ValueError if the filename has nothing alphanumeric to slugify.
+    """
+    if vault.slug_style != "kebab":
+        return path
+    directory, _, filename = path.rpartition("/")
+    stem = filename[:-3] if filename.endswith(".md") else filename
+    slug = slugify_kebab(stem)
+    if slug is None:
+        raise ValueError(
+            f"Filename '{stem}' cannot be normalized to kebab-case (OBSIDIAN_SLUG_STYLE=kebab). "
+            "It must contain at least one letter or digit."
+        )
+    new_filename = f"{slug}.md"
+    return f"{directory}/{new_filename}" if directory else new_filename
+
+
+def apply_slug_style_to_frontmatter_name(vault, content: str) -> str:
+    """If OBSIDIAN_SLUG_STYLE=kebab and content has a frontmatter `name:`
+    field, kebab-slugify its value in place (spec section 1, item b).
+    No-op if slug_style is off, there's no frontmatter, or no `name` key.
+    """
+    if vault.slug_style != "kebab" or not content.startswith("---\n"):
+        return content
+    frontmatter, _ = vault._parse_frontmatter(content)
+    name = frontmatter.get("name")
+    if not name or not isinstance(name, str):
+        return content
+    slug = slugify_kebab(name)
+    if slug is None:
+        raise ValueError(
+            f"Frontmatter 'name: {name}' cannot be normalized to kebab-case "
+            "(OBSIDIAN_SLUG_STYLE=kebab)."
+        )
+    if slug == name:
+        return content
+
+    end_index = content.find("\n---\n", 4)
+    if end_index == -1:
+        return content
+    fm_text = content[4:end_index]
+    new_fm_lines = [
+        f"name: {slug}" if re.match(r'^name\s*:', line) else line
+        for line in fm_text.split("\n")
+    ]
+    return f"---\n{chr(10).join(new_fm_lines)}\n---\n{content[end_index + 5:]}"
+
+
+def normalize_frontmatter_tags_for_kebab(vault, content: str) -> str:
+    """If OBSIDIAN_TAG_STYLE=kebab and content has frontmatter tags,
+    kebab-normalize them in place (spec section 1: "nas tags de frontmatter
+    em create quando enforcement ativo"). No-op otherwise — this never
+    injects a tags block where none existed.
+    """
+    if vault.tag_style != "kebab" or not content.startswith("---\n"):
+        return content
+    frontmatter, _ = vault._parse_frontmatter(content)
+    raw_tags = frontmatter.get("tags", frontmatter.get("tag"))
+    if not raw_tags:
+        return content
+    if isinstance(raw_tags, str):
+        raw_tags = [raw_tags]
+
+    # Imported lazily: organization.py imports from note_management in the
+    # other direction (rename_note et al already cross-import sibling tools
+    # modules this way — see link_management import at the top of
+    # organization.py), so importing at call time avoids a circular import
+    # at module load.
+    from ..utils.vault_config import normalize_tag_kebab
+    from .organization import _update_frontmatter_tags
+
+    normalized = []
+    for tag in raw_tags:
+        slug = normalize_tag_kebab(str(tag).lstrip("#").strip())
+        if slug is None:
+            raise ValueError(
+                f"Frontmatter tag '{tag}' cannot be normalized to kebab-case "
+                "(OBSIDIAN_TAG_STYLE=kebab). Each '/'-separated segment must contain "
+                "at least one letter or digit."
+            )
+        normalized.append(slug)
+    return _update_frontmatter_tags(content, normalized, "replace")
+
+
+async def _apply_write_checks(vault, path: str, content: str, enforce_template: bool) -> Tuple[str, List[str]]:
+    """Shared write-time checks for create_note and update_note(replace):
+    template conformance (only when enforce_template — create/replace, never
+    edit_note_section/append), wikilink validation, and kebab tag/name
+    normalization. Returns (possibly-rewritten content, warnings).
+    Raises ValueError for any hard violation (strict policy, malformed
+    wikilink, non-normalizable tag/name) — caller writes nothing in that case.
+    """
+    if enforce_template:
+        check_template_conformance(vault, path, content)
+
+    content, warnings = await validate_wikilinks_for_write(vault, content)
+    content = normalize_frontmatter_tags_for_kebab(vault, content)
+    content = apply_slug_style_to_frontmatter_name(vault, content)
+    return content, warnings
+
+
+def _size_policy_warning(vault, path: str, content: str, is_incremental: bool) -> List[str]:
+    """Run check_note_size_policy and wrap a warn-level result as a
+    single-item list (empty if ok/off/daily-exempt/strict-already-raised)."""
+    warning = check_note_size_policy(vault, path, count_lines(content), is_incremental)
+    return [warning] if warning else []
 
 
 def _serialize_note_writes(func):
@@ -227,20 +345,28 @@ async def create_note(
     is_valid, error_msg = validate_note_path(path)
     if not is_valid:
         raise ValueError(f"Invalid path: {error_msg}")
-    
+
     # Validate content
     is_valid, error_msg = validate_content(content)
     if not is_valid:
         raise ValueError(error_msg)
-    
+
     # Sanitize path
     path = sanitize_path(path)
-    
+
+    vault = get_vault()
+    path = apply_slug_style_to_path(vault, path)  # OBSIDIAN_SLUG_STYLE=kebab
+
     if ctx:
         ctx.info(f"Creating note: {path}")
-    
-    vault = get_vault()
-    
+
+    # Template conformance (folder rule, if any) + wikilink validation +
+    # kebab tag/name normalization. Raises ValueError before anything is
+    # written if a hard check fails (strict template/wikilink violation,
+    # non-normalizable tag/name).
+    content, wikilink_warnings = await _apply_write_checks(vault, path, content, enforce_template=True)
+    warnings = wikilink_warnings + _size_policy_warning(vault, path, content, is_incremental=False)
+
     # Create the note
     try:
         note = await vault.write_note(path, content, overwrite=overwrite)
@@ -252,9 +378,9 @@ async def create_note(
         # with our write_note implementation, but handle it just in case
         note = await vault.write_note(path, content, overwrite=True)
         created = False
-    
+
     # Return standardized CRUD success structure
-    return {
+    result = {
         "success": True,
         "path": note.path,
         "operation": "created" if created else "overwritten",
@@ -264,6 +390,9 @@ async def create_note(
             "metadata": note.metadata.model_dump(exclude_none=True)
         }
     }
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 @_serialize_note_writes
@@ -329,10 +458,15 @@ async def update_note(
     
     if not note_exists:
         if create_if_not_exists:
-            # Create the note
+            # A first-time write is a full-content write, same as
+            # create_note: template conformance + wikilink validation +
+            # kebab tag/name normalization all apply.
+            content, wikilink_warnings = await _apply_write_checks(vault, path, content, enforce_template=True)
+            warnings = wikilink_warnings + _size_policy_warning(vault, path, content, is_incremental=False)
+
             note = await vault.write_note(path, content, overwrite=False)
             # Return standardized CRUD success structure
-            return {
+            result = {
                 "success": True,
                 "path": note.path,
                 "operation": "created",
@@ -342,24 +476,32 @@ async def update_note(
                     "metadata": note.metadata.model_dump(exclude_none=True)
                 }
             }
+            if warnings:
+                result["warnings"] = warnings
+            return result
         else:
             raise FileNotFoundError(ERROR_MESSAGES["note_not_found"].format(path=path))
-    
+
     # Handle merge strategies
     if merge_strategy == "append":
-        # Append to existing content
+        # Incremental edit — exempt from template conformance (spec section
+        # 3). Wikilink validation and the size check run against just the
+        # appended fragment / resulting total, matching edit_note_section.
+        content, wikilink_warnings = await validate_wikilinks_for_write(vault, content)
         final_content = existing_note.content.rstrip() + "\n\n" + content
+        warnings = wikilink_warnings + _size_policy_warning(vault, path, final_content, is_incremental=True)
     elif merge_strategy == "replace":
-        # Replace entire content (default)
+        content, wikilink_warnings = await _apply_write_checks(vault, path, content, enforce_template=True)
         final_content = content
+        warnings = wikilink_warnings + _size_policy_warning(vault, path, final_content, is_incremental=False)
     else:
         raise ValueError(f"Invalid merge_strategy: {merge_strategy}. Must be 'replace' or 'append'")
-    
+
     # Update existing note
     note = await vault.write_note(path, final_content, overwrite=True)
-    
+
     # Return standardized CRUD success structure
-    return {
+    result = {
         "success": True,
         "path": note.path,
         "operation": "updated",
@@ -370,6 +512,9 @@ async def update_note(
             "metadata": note.metadata.model_dump(exclude_none=True)
         }
     }
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 @_serialize_note_writes
@@ -439,7 +584,11 @@ async def edit_note_section(
         note_content = existing_note.content
     except FileNotFoundError:
         raise FileNotFoundError(ERROR_MESSAGES["note_not_found"].format(path=path))
-    
+
+    # Incremental edit — exempt from template conformance (spec section 3).
+    # Wikilink validation runs against just the inserted fragment.
+    content, warnings = await validate_wikilinks_for_write(vault, content)
+
     # Parse the section identifier to extract heading level and text
     heading_match = re.match(r'^(#{1,6})\s+(.+)$', section_identifier)
     if not heading_match:
@@ -489,11 +638,13 @@ async def edit_note_section(
             if not note_content.endswith('\n'):
                 note_content += '\n'
             note_content += f"\n{section_identifier}\n\n{content}"
-            
+
+            warnings = warnings + _size_policy_warning(vault, path, note_content, is_incremental=True)
+
             # Save the updated note
             await vault.write_note(path, note_content, overwrite=True)
-            
-            return {
+
+            result = {
                 "success": True,
                 "path": path,
                 "operation": "section_edit",
@@ -502,6 +653,9 @@ async def edit_note_section(
                 "section_found": False,
                 "section_created": True
             }
+            if warnings:
+                result["warnings"] = warnings
+            return result
         else:
             raise ValueError(f"Section '{section_identifier}' not found in {path}")
     
@@ -546,19 +700,24 @@ async def edit_note_section(
     
     # Reconstruct the content
     new_content = '\n'.join(lines)
-    
+
+    warnings = warnings + _size_policy_warning(vault, path, new_content, is_incremental=True)
+
     # Save the updated note
     await vault.write_note(path, new_content, overwrite=True)
-    
-    return {
+
+    result = {
         "success": True,
         "path": path,
-        "operation": "section_edit", 
+        "operation": "section_edit",
         "section": section_identifier,
         "edit_type": operation,
         "section_found": True,
         "section_created": False
     }
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 @_serialize_note_writes
