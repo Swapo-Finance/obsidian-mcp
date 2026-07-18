@@ -4,7 +4,7 @@ import os
 import logging
 from typing import Annotated, Optional, List, Literal, Union
 from pydantic import Field
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 from .utils.filesystem import init_vault, get_vault
 
@@ -71,7 +71,7 @@ async def read_note_tool(
         max_length=255,
         examples=["Daily/2024-01-15.md", "Projects/AI Research.md", "Ideas/Quick Note.md"]
     )],
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Read the content and metadata of a specific note.
@@ -124,7 +124,7 @@ async def create_note_tool(
         description="Set to true to replace an existing note at this location. Use carefully as this deletes the original content.",
         default=False
     )] = False,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Create a new note or overwrite an existing one.
@@ -170,7 +170,7 @@ async def update_note_tool(
         description="How to handle existing content. 'replace' = overwrite everything (default), 'append' = add new content to the end",
         default="replace"
     )] = "replace",
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Update the content of an existing note.
@@ -226,7 +226,7 @@ async def edit_note_section_tool(
         description="Create the section at the end of the note if it doesn't exist",
         default=False
     )] = False,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Edit a specific section of a note identified by a markdown heading.
@@ -273,7 +273,7 @@ async def delete_note_tool(
         max_length=255,
         examples=["Archive/Old Note.md", "Temp/Draft.md"]
     )],
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Delete a note from the vault permanently.
@@ -334,7 +334,7 @@ async def search_notes_tool(
                      "server's configured default.",
         default=None
     )] = None,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Search for notes by filename or content, with smart ranking.
@@ -406,7 +406,7 @@ async def search_by_date_tool(
                      "OBSIDIAN_SEARCH_INDEX_THRESHOLD. Leave unset to use the server's configured default.",
         default=None
     )] = None,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Search for notes by creation or modification date.
@@ -460,7 +460,7 @@ async def search_by_regex_tool(
                      "server's configured default.",
         default=None
     )] = None,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Search for notes using regular expressions for advanced pattern matching.
@@ -521,7 +521,7 @@ async def search_by_property_tool(
                      "OBSIDIAN_SEARCH_INDEX_THRESHOLD. Leave unset to use the server's configured default.",
         default=None
     )] = None,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Search for notes by their frontmatter property values.
@@ -575,7 +575,7 @@ async def list_notes_tool(
         description="Include notes from all subfolders. Set to false for only immediate children.",
         default=True
     )] = True,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     List notes in the vault or a specific directory.
@@ -614,7 +614,7 @@ async def list_folders_tool(
         description="Whether to include all nested subfolders",
         default=True
     )] = True,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     List folders in the vault or a specific directory.
@@ -659,7 +659,7 @@ async def move_note_tool(
         description="Automatically update all [[wiki links]] if the filename changes during move",
         default=True
     )] = True,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Move a note to a new location, optionally with a new name.
@@ -711,7 +711,7 @@ async def rename_note_tool(
         description="Automatically update all [[wiki links]] to this note across the vault",
         default=True
     )] = True,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Rename a note and automatically update all references to it.
@@ -754,7 +754,7 @@ async def create_folder_tool(
         description="Whether to create a placeholder file (.gitkeep or README.md)",
         default=True
     )] = True,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Create a new folder in the vault, including all parent folders in the path.
@@ -801,7 +801,7 @@ async def move_folder_tool(
         description="Whether to update links in other notes (future enhancement)",
         default=True
     )] = True,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Move an entire folder and all its contents to a new location.
@@ -840,7 +840,7 @@ async def add_tags_tool(
         max_length=50,
         examples=[["project", "urgent"], ["project/web", "project/mobile"], ["work/meetings/standup", "work/meetings/planning"]]
     )],
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Add tags to a note's frontmatter.
@@ -888,7 +888,7 @@ async def update_tags_tool(
         description="True = add these tags to existing ones, False = replace all tags with this new list",
         default=False
     )] = False,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Update tags on a note - either replace all tags or merge with existing.
@@ -927,7 +927,7 @@ async def remove_tags_tool(
         max_length=50,
         examples=[["outdated", "draft"], ["project/completed", "priority/high"]]
     )],
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Remove specific tags from a note's frontmatter.
@@ -964,7 +964,7 @@ async def get_note_info_tool(
         max_length=255,
         examples=["Projects/Overview.md", "Daily/2024-01-15.md"]
     )],
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Get metadata and statistics about a note without reading its content.
@@ -1011,7 +1011,7 @@ async def get_backlinks_tool(
         le=500,
         default=100
     )] = 100,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Find all notes that link to a specific note (backlinks).
@@ -1054,7 +1054,7 @@ async def get_outgoing_links_tool(
         description="Also check if each linked note actually exists in your vault",
         default=False
     )] = False,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     List all links from a specific note (outgoing links).
@@ -1091,7 +1091,7 @@ async def find_broken_links_tool(
         default=None,
         examples=["Daily/2025-01-09.md", "Projects/Overview.md"]
     )] = None,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Find all broken links in the vault, a specific directory, or a single note.
@@ -1135,7 +1135,7 @@ async def find_orphaned_notes_tool(
         le=365,
         examples=[7, 30, 90]
     )] = None,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Find orphaned notes that may need organization or cleanup.
@@ -1222,7 +1222,7 @@ async def list_tags_tool(
         description="Include the list of file paths that contain each tag",
         default=False
     )] = False,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     List all unique tags used across the vault with usage statistics.
@@ -1303,7 +1303,7 @@ async def batch_update_properties_tool(
         description="Also remove tags from note body (inline #tags). Only applies when remove_tags is specified.",
         default=False
     )] = False,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Batch update properties across multiple notes.
@@ -1397,7 +1397,7 @@ async def read_image_tool(
         description="Include file size and other metadata about the image",
         default=False
     )] = False,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Read an image file from the Obsidian vault for analysis.
@@ -1441,7 +1441,7 @@ async def view_note_images_tool(
         gt=0,
         le=4096
     )] = 800,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Extract and analyze images embedded in a note.
@@ -1474,7 +1474,7 @@ async def get_note_template_tool(
         max_length=255,
         examples=["01-projects", "01-projects/Foo.md", ""]
     )] = "",
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Show the template rule (if any) that applies to a note or folder.
@@ -1501,7 +1501,7 @@ async def get_note_template_tool(
         raise ToolError(f"Failed to get note template: {str(e)}")
 
 @mcp.tool()
-async def help_tool(ctx=None):
+async def help_tool(ctx: Optional[Context] = None):
     """
     Catalog of every env var (with its current effective value), the 3
     accepted forms for path-shaped config, and a one-line index of all
@@ -1540,7 +1540,7 @@ async def add_daily_note_tool(
         pattern=r"^\d{4}-\d{2}-\d{2}$",
         examples=["2025-01-15"]
     )] = None,
-    ctx=None
+    ctx: Optional[Context] = None
 ):
     """
     Append to today's daily note, creating it (from the daily-dir's template,

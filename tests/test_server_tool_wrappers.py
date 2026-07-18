@@ -138,5 +138,123 @@ class TestAddDailyNoteToolWrapper:
             await add_daily_note_tool.fn(content="Entry.", date="not-a-date")
 
 
+class TestContextAnnotations:
+    """Structural test: verify all 30 @mcp.tool() wrappers have ctx: Optional[Context] annotation."""
+
+    def test_all_30_tools_have_ctx_optional_context_annotation(self):
+        """Import all 30 tool wrappers and verify ctx parameter has Optional[Context] type."""
+        import inspect
+        from typing import get_origin, get_args, Union
+        from fastmcp import Context
+
+        # Import all 30 tool wrapper functions
+        from obsidian_mcp.server import (
+            read_note_tool,
+            create_note_tool,
+            update_note_tool,
+            edit_note_section_tool,
+            delete_note_tool,
+            search_notes_tool,
+            search_by_date_tool,
+            search_by_regex_tool,
+            search_by_property_tool,
+            list_notes_tool,
+            list_folders_tool,
+            move_note_tool,
+            rename_note_tool,
+            create_folder_tool,
+            move_folder_tool,
+            add_tags_tool,
+            update_tags_tool,
+            remove_tags_tool,
+            get_note_info_tool,
+            get_backlinks_tool,
+            get_outgoing_links_tool,
+            find_broken_links_tool,
+            find_orphaned_notes_tool,
+            list_tags_tool,
+            batch_update_properties_tool,
+            read_image_tool,
+            view_note_images_tool,
+            get_note_template_tool,
+            help_tool,
+            add_daily_note_tool,
+        )
+
+        all_tools = [
+            read_note_tool,
+            create_note_tool,
+            update_note_tool,
+            edit_note_section_tool,
+            delete_note_tool,
+            search_notes_tool,
+            search_by_date_tool,
+            search_by_regex_tool,
+            search_by_property_tool,
+            list_notes_tool,
+            list_folders_tool,
+            move_note_tool,
+            rename_note_tool,
+            create_folder_tool,
+            move_folder_tool,
+            add_tags_tool,
+            update_tags_tool,
+            remove_tags_tool,
+            get_note_info_tool,
+            get_backlinks_tool,
+            get_outgoing_links_tool,
+            find_broken_links_tool,
+            find_orphaned_notes_tool,
+            list_tags_tool,
+            batch_update_properties_tool,
+            read_image_tool,
+            view_note_images_tool,
+            get_note_template_tool,
+            help_tool,
+            add_daily_note_tool,
+        ]
+
+        assert len(all_tools) == 30, f"Expected 30 tools, found {len(all_tools)}"
+
+        for tool in all_tools:
+            # .fn unwraps the @mcp.tool() decorator
+            sig = inspect.signature(tool.fn)
+            assert "ctx" in sig.parameters, f"{tool.fn.__name__} missing 'ctx' parameter"
+
+            ctx_param = sig.parameters["ctx"]
+            annotation = ctx_param.annotation
+
+            # Verify annotation is Optional[Context] (which is Union[Context, None])
+            # Optional[X] is equivalent to Union[X, None]
+            assert annotation != inspect.Parameter.empty, (
+                f"{tool.fn.__name__}: ctx parameter has no type annotation. "
+                f"Expected Optional[Context], got bare default value."
+            )
+
+            # Check if it's Optional[Context] or Union[Context, None]
+            origin = get_origin(annotation)
+
+            # Union[X, None] is how typing represents Optional[X]
+            if origin is Union:
+                args = get_args(annotation)
+                # Should be (Context, type(None))
+                has_context = Context in args
+                has_none = type(None) in args
+                assert has_context and has_none, (
+                    f"{tool.fn.__name__}: ctx annotation is {annotation}, "
+                    f"expected Optional[Context] (Union[Context, None])"
+                )
+            else:
+                raise AssertionError(
+                    f"{tool.fn.__name__}: ctx annotation is {annotation}, "
+                    f"expected Optional[Context] (Union[Context, None])"
+                )
+
+            # Verify default value is None
+            assert ctx_param.default is None, (
+                f"{tool.fn.__name__}: ctx default is {ctx_param.default}, expected None"
+            )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

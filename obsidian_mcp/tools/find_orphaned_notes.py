@@ -37,7 +37,7 @@ async def find_orphaned_notes(
         exclude_folders = ["Templates", "Archive", "Daily"]
     
     if ctx:
-        ctx.info(f"Finding orphaned notes of type: {orphan_type}")
+        await ctx.info(f"Finding orphaned notes of type: {orphan_type}")
     
     # Get all notes
     all_notes = await vault.list_notes(recursive=True)
@@ -163,7 +163,7 @@ async def find_orphaned_notes(
         
         # Progress reporting
         if ctx and (i + 1) % 50 == 0:
-            ctx.info(f"Processed {i + 1}/{total_notes} notes...")
+            await ctx.info(f"Processed {i + 1}/{total_notes} notes...")
     
     # Light enrichment (spec section 10.4's closing sentence): add each
     # orphaned note's cached name/description. Best-effort — a vault

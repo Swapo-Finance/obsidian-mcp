@@ -103,7 +103,7 @@ async def move_note(
     except FileNotFoundError:
         # If exact path not found, try to find the note by filename
         if ctx:
-            ctx.info(f"Note not found at {source_path}, searching for filename...")
+            await ctx.info(f"Note not found at {source_path}, searching for filename...")
         
         # Import search function
         from ..tools.search_discovery import search_notes
@@ -118,7 +118,7 @@ async def move_note(
             # Exactly one match - use it
             found_path = search_result["results"][0]["path"]
             if ctx:
-                ctx.info(f"Found unique match at: {found_path}")
+                await ctx.info(f"Found unique match at: {found_path}")
             
             # Update source_path to the found path
             source_path = found_path
@@ -142,9 +142,9 @@ async def move_note(
     name_changed = source_name != dest_name
     
     if ctx:
-        ctx.info(f"Moving note from {source_path} to {destination_path}")
+        await ctx.info(f"Moving note from {source_path} to {destination_path}")
         if name_changed:
-            ctx.info(f"Filename is changing from '{source_filename}' to '{dest_filename}'")
+            await ctx.info(f"Filename is changing from '{source_filename}' to '{dest_filename}'")
     
     # Check if destination already exists
     try:
@@ -161,14 +161,14 @@ async def move_note(
     
     if name_changed and update_links:
         if ctx:
-            ctx.info(f"Filename changed - updating all links from '{source_name}' to '{dest_name}'")
+            await ctx.info(f"Filename changed - updating all links from '{source_name}' to '{dest_name}'")
         
         # Get all backlinks to the old note
         backlinks_result = await get_backlinks(source_path, include_context=False, ctx=None)
         backlinks = backlinks_result['findings']
         
         if ctx:
-            ctx.info(f"Found {len(backlinks)} backlinks to update")
+            await ctx.info(f"Found {len(backlinks)} backlinks to update")
         
         # Group backlinks by source note for efficient updating
         updates_by_note = {}
@@ -214,11 +214,11 @@ async def move_note(
                     })
                     
                     if ctx:
-                        ctx.info(f"Updated {updates_in_note} links in {note_path}")
+                        await ctx.info(f"Updated {updates_in_note} links in {note_path}")
                 
             except Exception as e:
                 if ctx:
-                    ctx.info(f"Error updating links in {note_path}: {str(e)}")
+                    await ctx.info(f"Error updating links in {note_path}: {str(e)}")
     
     # Create note at new location
     await vault.write_note(destination_path, source_note.content, overwrite=False)
@@ -228,9 +228,9 @@ async def move_note(
     
     if ctx:
         if name_changed and update_links:
-            ctx.info(f"Successfully moved and renamed note, updated {links_updated} links")
+            await ctx.info(f"Successfully moved and renamed note, updated {links_updated} links")
         else:
-            ctx.info(f"Successfully moved note")
+            await ctx.info(f"Successfully moved note")
     
     # Return standardized move operation structure
     return {
@@ -313,7 +313,7 @@ async def rename_note(
     except FileNotFoundError:
         # If exact path not found, try to find the note by filename
         if ctx:
-            ctx.info(f"Note not found at {old_path}, searching for filename...")
+            await ctx.info(f"Note not found at {old_path}, searching for filename...")
         
         # Import search function
         from ..tools.search_discovery import search_notes
@@ -328,7 +328,7 @@ async def rename_note(
             # Exactly one match - use it
             found_path = search_result["results"][0]["path"]
             if ctx:
-                ctx.info(f"Found unique match at: {found_path}")
+                await ctx.info(f"Found unique match at: {found_path}")
             
             # Update old_path to the found path
             old_path = found_path
@@ -362,7 +362,7 @@ async def rename_note(
     new_name = new_filename[:-3] if new_filename.endswith('.md') else new_filename
     
     if ctx:
-        ctx.info(f"Renaming note from {old_path} to {new_path}")
+        await ctx.info(f"Renaming note from {old_path} to {new_path}")
     
     # Check if destination already exists
     try:
@@ -379,14 +379,14 @@ async def rename_note(
     
     if update_links:
         if ctx:
-            ctx.info(f"Finding all notes that link to {old_name}")
+            await ctx.info(f"Finding all notes that link to {old_name}")
         
         # Get all backlinks to the old note
         backlinks_result = await get_backlinks(old_path, include_context=False, ctx=None)
         backlinks = backlinks_result['findings']
         
         if ctx:
-            ctx.info(f"Found {len(backlinks)} backlinks to update")
+            await ctx.info(f"Found {len(backlinks)} backlinks to update")
         
         # Group backlinks by source note for efficient updating
         updates_by_note = {}
@@ -436,18 +436,18 @@ async def rename_note(
                     })
                     
                     if ctx:
-                        ctx.info(f"Updated {updates_in_note} links in {note_path}")
+                        await ctx.info(f"Updated {updates_in_note} links in {note_path}")
                 
             except Exception as e:
                 if ctx:
-                    ctx.info(f"Error updating links in {note_path}: {str(e)}")
+                    await ctx.info(f"Error updating links in {note_path}: {str(e)}")
     
     # Now rename the note itself
     await vault.write_note(new_path, source_note.content, overwrite=False)
     await vault.delete_note(old_path)
     
     if ctx:
-        ctx.info(f"Successfully renamed note and updated {links_updated} links")
+        await ctx.info(f"Successfully renamed note and updated {links_updated} links")
     
     # Return standardized CRUD success structure
     return {
@@ -504,7 +504,7 @@ async def create_folder(
     folder_path = folder_path.strip('/').replace('\\', '/')
     
     if ctx:
-        ctx.info(f"Creating folder: {folder_path}")
+        await ctx.info(f"Creating folder: {folder_path}")
     
     vault = get_vault()
     
@@ -525,12 +525,12 @@ async def create_folder(
             existing_notes = await list_notes(folder, recursive=False, ctx=None)
             # Folder exists if we can list it (even with 0 notes)
             if ctx:
-                ctx.info(f"Folder already exists: {folder}")
+                await ctx.info(f"Folder already exists: {folder}")
         except Exception:
             # Folder doesn't exist, mark it for creation
             folders_created.append(folder)
             if ctx:
-                ctx.info(f"Will create folder: {folder}")
+                await ctx.info(f"Will create folder: {folder}")
     
     if not folders_created and not create_placeholder:
         # All folders already exist
@@ -649,7 +649,7 @@ async def move_folder(
         raise ValueError("Cannot move a folder into its own subfolder")
     
     if ctx:
-        ctx.info(f"Moving folder from {source_folder} to {destination_folder}")
+        await ctx.info(f"Moving folder from {source_folder} to {destination_folder}")
     
     vault = get_vault()
     
@@ -688,11 +688,11 @@ async def move_folder(
             notes_moved += 1
             
             if ctx:
-                ctx.info(f"Moved: {old_path} → {new_path}")
+                await ctx.info(f"Moved: {old_path} → {new_path}")
         except Exception as e:
             errors.append(f"Failed to move {old_path}: {str(e)}")
             if ctx:
-                ctx.info(f"Error moving {old_path}: {str(e)}")
+                await ctx.info(f"Error moving {old_path}: {str(e)}")
     
     # Update links if requested
     if update_links:
@@ -767,7 +767,7 @@ async def add_tags(
     tags = _clean_tags(vault, tags)
 
     if ctx:
-        ctx.info(f"Adding tags to {path}: {tags}")
+        await ctx.info(f"Adding tags to {path}: {tags}")
 
     try:
         note = await vault.read_note(path)
@@ -850,7 +850,7 @@ async def update_tags(
     tags = _clean_tags(vault, tags)
 
     if ctx:
-        ctx.info(f"Updating tags for {path}: {tags} (merge={merge})")
+        await ctx.info(f"Updating tags for {path}: {tags} (merge={merge})")
 
     try:
         note = await vault.read_note(path)
@@ -943,7 +943,7 @@ async def remove_tags(
     tags = _clean_tags(vault, tags)
 
     if ctx:
-        ctx.info(f"Removing tags from {path}: {tags}")
+        await ctx.info(f"Removing tags from {path}: {tags}")
 
     try:
         note = await vault.read_note(path)
@@ -1019,7 +1019,7 @@ async def get_note_info(
     path = sanitize_path(path)
     
     if ctx:
-        ctx.info(f"Getting info for: {path}")
+        await ctx.info(f"Getting info for: {path}")
     
     vault = get_vault()
     
@@ -1212,7 +1212,7 @@ async def list_tags(
         raise ValueError(ERROR_MESSAGES["invalid_sort_by"].format(value=sort_by))
     
     if ctx:
-        ctx.info("Collecting tags from vault...")
+        await ctx.info("Collecting tags from vault...")
     
     vault = get_vault()
 
@@ -1223,7 +1223,7 @@ async def list_tags(
         tag_counts = {tag: len(paths) for tag, paths in tags_by_name.items()}
 
         if ctx:
-            ctx.info(f"Found {len(tag_counts)} unique tags across the vault...")
+            await ctx.info(f"Found {len(tag_counts)} unique tags across the vault...")
 
         # Format results
         if include_counts or include_files:
@@ -1258,7 +1258,7 @@ async def list_tags(
         
     except Exception as e:
         if ctx:
-            ctx.info(f"Failed to list tags: {str(e)}")
+            await ctx.info(f"Failed to list tags: {str(e)}")
         raise ValueError(ERROR_MESSAGES["tag_collection_failed"].format(error=str(e)))
 
 
@@ -1488,7 +1488,7 @@ async def batch_update_properties(
         notes_to_update = [r['path'] for r in results['results']]
     
     if ctx:
-        ctx.info(f"Found {len(notes_to_update)} notes to update")
+        await ctx.info(f"Found {len(notes_to_update)} notes to update")
     
     # Process each note
     results = {
@@ -1581,7 +1581,7 @@ async def batch_update_properties(
                 })
             
             if ctx and results['updated'] % 10 == 0:
-                ctx.info(f"Updated {results['updated']} notes...")
+                await ctx.info(f"Updated {results['updated']} notes...")
                 
         except Exception as e:
             results['errors'].append({
@@ -1591,6 +1591,6 @@ async def batch_update_properties(
             results['failed'] += 1
     
     if ctx:
-        ctx.info(f"Batch update complete: {results['updated']} updated, {results['failed']} failed")
+        await ctx.info(f"Batch update complete: {results['updated']} updated, {results['failed']} failed")
     
     return results

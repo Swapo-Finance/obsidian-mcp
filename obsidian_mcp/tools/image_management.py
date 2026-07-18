@@ -63,7 +63,7 @@ async def read_image(
     # Don't sanitize path for images - it adds .md extension
     
     if ctx:
-        ctx.info(f"Reading image: {path}")
+        await ctx.info(f"Reading image: {path}")
     
     vault = get_vault()
     

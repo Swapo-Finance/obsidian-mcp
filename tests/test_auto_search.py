@@ -2,7 +2,7 @@
 
 import pytest
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from obsidian_mcp.tools.organization import rename_note, move_note
 from obsidian_mcp.models import Note, NoteMetadata
@@ -254,7 +254,7 @@ async def test_auto_search_preserves_directory_context(mock_get_vault):
 async def test_auto_search_with_context_logging(mock_get_vault):
     """Test that auto-search logs helpful context messages."""
     vault = mock_get_vault
-    ctx = MagicMock()
+    ctx = AsyncMock()
     
     note = Note(
         path="Daily/2024-01-15.md",
