@@ -12,6 +12,19 @@ needs for wrapper-level (ValueError->ToolError) behavior.
 
 Fixture pattern (tempfile.mkdtemp + init_vault + shutil.rmtree teardown) is
 the same one every other test file in this suite uses.
+
+Also covers three fixes to the same function:
+- max_files_per_tag: per-tag `files` truncation + `files_total` (true
+  per-tag count, set independent of include_counts).
+- sort_by="count" now honored in the include_counts=False/include_files=False
+  shortcut branch (previously silently ignored, always name-sorted).
+- sort_by="count" in the item-building branch now keys off the
+  authoritative tag_counts dict instead of the optional per-item "count"
+  field (previously x.get("count", 0), which silently fell back to
+  insertion order once include_counts=False dropped "count" from every
+  item). TestListTagsSortOrderFlagMatrix below pins both this and the
+  prior fix across the full (include_counts, include_files) matrix so
+  neither bug class can silently return.
 """
 
 import os
@@ -30,6 +43,22 @@ from obsidian_mcp.utils.filesystem import init_vault
 # (pages of 5, 5, 4) without needing a second fixture just for that.
 TAG_COUNT = 14
 TAG_NAMES = [f"tag-{i:02d}" for i in range(TAG_COUNT)]  # zero-padded -> already name-sorted
+
+# 8 files on one tag: comfortably over a small max_files_per_tag (e.g. 3) to
+# exercise truncation, zero-padded so sorted() order is predictable.
+POPULAR_FILES = [f"Popular{i:02d}.md" for i in range(8)]
+
+# All 4 combinations of the two flags that gate which optional keys
+# list_tags puts on each item ("count" from include_counts; "files"/
+# "files_total" from include_files). These flags must only affect which
+# fields are present -- never the sort -- so every ordering assertion in
+# TestListTagsSortOrderFlagMatrix loops over all 4.
+FLAG_COMBINATIONS = [
+    (True, True),
+    (True, False),
+    (False, True),
+    (False, False),
+]
 
 
 @pytest_asyncio.fixture
@@ -74,6 +103,101 @@ async def count_ordered_vault():
 
     os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)
     shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest_asyncio.fixture
+async def heavy_tag_vault():
+    """One tag ('popular') on 8 files -> truncation target for
+    max_files_per_tag; one tag ('rare') on 1 file -> untruncated control.
+
+    Isolated from the other fixtures so cap tests don't have to reason about
+    14 unrelated tags or the count-ordering fixture's file counts.
+    """
+    temp_dir = tempfile.mkdtemp(prefix="obsidian_list_tags_cap_")
+    os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"
+    vault = init_vault(temp_dir)
+
+    for name in POPULAR_FILES:
+        await create_note(name, "---\ntags: [popular]\n---\n# Popular\n")
+    await create_note("Rare0.md", "---\ntags: [rare]\n---\n# Rare\n")
+
+    yield vault
+
+    os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)
+    shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest_asyncio.fixture
+async def adversarial_order_vault():
+    """3 tags whose discovery order, name-asc order, and count-desc order
+    are all mutually different, so a result matching any one of the three
+    orders can't be mistaken for matching another:
+
+      discovery (vault cache insertion order): zulu, mike, alpha
+      count-desc:                              zulu(3), alpha(2), mike(1)
+      name-asc:                                alpha, mike, zulu
+
+    Verified empirically (.claude/tmp scratch script, not checked in) that
+    discovery order here is creation-call order, NOT filesystem walk order
+    -- and that the two only coincide because of the priming read below.
+    VaultCache.note_mutated() is a no-op until the cache has been built
+    once (see vault_cache.py); left alone, the first create_note() call
+    would NOT build it, so all 6 notes get indexed together in one deferred
+    _full_scan_locked() pass ordered by os.walk()'s filesystem directory
+    enumeration -- unspecified by Python, observed to differ from both
+    creation order AND name/count order on this machine, and not
+    guaranteed to reproduce the same way on Linux CI. The
+    `await vault.cache.get_tags_index()` call below, issued while the
+    vault is still empty, forces that full scan early (0 files, so it's a
+    no-op index-wise) and flips _built=True *before* any note exists.
+    Every create_note() after that routes through the incremental
+    note_mutated()->_index_note() path instead, which does
+    `self._tags_index.setdefault(tag, set()).add(relpath)` on a plain
+    dict -- deterministic, creation-order-driven, and portable. That is
+    what pins discovery order to zulu (1st note), mike (2nd note), alpha
+    (3rd note), regardless of platform.
+
+    This is the exact fixture shape used to verify the round-2 fix
+    (organization.py sorting off tag_counts instead of the optional
+    per-item "count" key).
+
+    Unlike count_ordered_vault (discovery order there happens to equal
+    name-asc order, since notes were created in already-alphabetical
+    order), this fixture keeps all three orders distinct -- required so
+    TestListTagsSortOrderFlagMatrix can't accidentally pass by matching
+    the wrong order.
+    """
+    temp_dir = tempfile.mkdtemp(prefix="obsidian_list_tags_matrix_")
+    os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"
+    vault = init_vault(temp_dir)
+
+    # Prime the cache while the vault is empty (see docstring) so tag
+    # discovery order below is deterministic creation-call order instead
+    # of unspecified filesystem walk order.
+    await vault.cache.get_tags_index()
+
+    await create_note("Zulu0.md", "---\ntags: [zulu]\n---\n# Zulu0\n")
+    await create_note("Mike0.md", "---\ntags: [mike]\n---\n# Mike0\n")
+    await create_note("Alpha0.md", "---\ntags: [alpha]\n---\n# Alpha0\n")
+    await create_note("Zulu1.md", "---\ntags: [zulu]\n---\n# Zulu1\n")
+    await create_note("Zulu2.md", "---\ntags: [zulu]\n---\n# Zulu2\n")
+    await create_note("Alpha1.md", "---\ntags: [alpha]\n---\n# Alpha1\n")
+
+    yield vault
+
+    os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)
+    shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _tag_names(result: dict) -> list:
+    """Normalize a list_tags() result to a plain list of tag-name strings.
+
+    The item-building branch (include_counts or include_files truthy)
+    yields {"name": ..., ...} dicts; the names-only shortcut branch
+    (both False) yields bare name strings instead. Matrix assertions need
+    both shapes reduced to the same thing to compare apples to apples.
+    """
+    return [item if isinstance(item, str) else item["name"] for item in result["items"]]
 
 
 class TestListTagsPaginationDefaultPage:
@@ -151,6 +275,181 @@ class TestListTagsPaginationIncludeFiles:
         assert len(result["items"]) == 3
         for i, item in enumerate(result["items"]):
             assert item["files"] == [f"Note{i:02d}.md"]
+
+
+class TestListTagsMaxFilesPerTagCap:
+    @pytest.mark.asyncio
+    async def test_files_capped_and_files_total_is_true_count_when_over_cap(self, heavy_tag_vault):
+        result = await list_tags(include_files=True, max_files_per_tag=3)
+
+        popular = next(t for t in result["items"] if t["name"] == "popular")
+        assert len(popular["files"]) == 3
+        assert popular["files_total"] == 8
+        assert popular["files_total"] > len(popular["files"])  # truncated -> detectable via len < files_total
+
+    @pytest.mark.asyncio
+    async def test_untruncated_tag_has_files_length_equal_to_files_total(self, heavy_tag_vault):
+        result = await list_tags(include_files=True, max_files_per_tag=3)
+
+        rare = next(t for t in result["items"] if t["name"] == "rare")
+        assert len(rare["files"]) == rare["files_total"] == 1
+
+    @pytest.mark.asyncio
+    async def test_files_total_present_even_when_include_counts_false(self, heavy_tag_vault):
+        # Explicit contract: files_total is set inside `if include_files:`,
+        # independent of include_counts - assert it since `count` itself is
+        # absent from the item in this mode.
+        result = await list_tags(include_counts=False, include_files=True, max_files_per_tag=3)
+
+        popular = next(t for t in result["items"] if t["name"] == "popular")
+        assert "count" not in popular
+        assert popular["files_total"] == 8
+
+    @pytest.mark.asyncio
+    async def test_truncation_keeps_first_n_of_sorted_full_list(self, heavy_tag_vault):
+        result = await list_tags(include_files=True, max_files_per_tag=3)
+
+        popular = next(t for t in result["items"] if t["name"] == "popular")
+        assert popular["files"] == POPULAR_FILES[:3]
+
+    @pytest.mark.asyncio
+    async def test_default_cap_does_not_truncate_small_vault(self, heavy_tag_vault):
+        result = await list_tags(include_files=True)  # max_files_per_tag defaults to 20
+
+        popular = next(t for t in result["items"] if t["name"] == "popular")
+        assert len(popular["files"]) == popular["files_total"] == 8
+
+    @pytest.mark.asyncio
+    async def test_no_files_or_files_total_keys_when_include_files_false(self, heavy_tag_vault):
+        result = await list_tags(include_files=False, max_files_per_tag=3)
+
+        popular = next(t for t in result["items"] if t["name"] == "popular")
+        assert "files" not in popular
+        assert "files_total" not in popular
+
+    @pytest.mark.asyncio
+    async def test_cap_applies_per_item_within_a_small_paged_window(self, heavy_tag_vault):
+        # 2 tags total ("popular", "rare"); name-asc -> popular first.
+        result = await list_tags(include_files=True, max_files_per_tag=2, sort_by="name", offset=0, limit=1)
+
+        assert result["returned"] == 1
+        popular = result["items"][0]
+        assert popular["name"] == "popular"
+        assert len(popular["files"]) == 2
+        assert popular["files_total"] == 8
+
+
+class TestListTagsNamesOnlyBranchSortByCount:
+    """include_counts=False + include_files=False takes a shortcut branch
+    that returns plain tag-name strings (not {"name": ...} dicts) — unlike
+    every other branch in this file. It used to always sort by name,
+    silently ignoring sort_by="count"; this is the regression coverage for
+    that fix (obsidian_mcp/tools/organization.py)."""
+
+    @pytest.mark.asyncio
+    async def test_sort_by_count_orders_by_usage_descending_in_names_only_branch(self, count_ordered_vault):
+        result = await list_tags(include_counts=False, include_files=False, sort_by="count")
+
+        assert result["items"] == ["charlie", "bravo", "alpha"], (
+            "sort_by='count' was ignored in the include_counts=False/"
+            "include_files=False shortcut branch of list_tags — got "
+            f"{result['items']!r} instead of count-descending order"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sort_by_name_is_still_alphabetical_in_names_only_branch(self, count_ordered_vault):
+        result = await list_tags(include_counts=False, include_files=False, sort_by="name")
+
+        assert result["items"] == ["alpha", "bravo", "charlie"]
+
+    @pytest.mark.asyncio
+    async def test_names_only_branch_count_order_matches_full_branch_count_order(self, count_ordered_vault):
+        # Pins the two branches to identical sort_by="count" semantics — the
+        # thing that was broken (names-only branch drifted from the main
+        # include_counts=True branch's tie-break/ordering behavior).
+        names_only = await list_tags(include_counts=False, include_files=False, sort_by="count")
+        full = await list_tags(include_counts=True, sort_by="count")
+
+        assert names_only["items"] == [t["name"] for t in full["items"]]
+
+
+class TestListTagsSortOrderFlagMatrix:
+    """Pins list_tags ordering across the full (include_counts, include_files)
+    matrix -- not just the two combinations that happened to break so far.
+
+    Round 1: the names-only shortcut (include_counts=False,
+    include_files=False) always sorted by name, silently ignoring
+    sort_by="count".
+    Round 2: the item-building branch sorted via x.get("count", 0); with
+    include_counts=False, include_files=True no item had "count", every
+    key fell back to 0, and the result was insertion order while
+    reporting success.
+
+    Both are now fixed by keying every sort off tag_counts[...] (the
+    authoritative counts dict, always populated) instead of the optional
+    per-item "count" field. These tests loop over all 4 flag combinations
+    so any future refactor that reintroduces an optional-field sort key,
+    in either branch, fails immediately.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sort_by_count_is_true_count_descending_in_every_flag_combination(self, adversarial_order_vault):
+        for include_counts, include_files in FLAG_COMBINATIONS:
+            result = await list_tags(include_counts=include_counts, include_files=include_files, sort_by="count")
+
+            assert _tag_names(result) == ["zulu", "alpha", "mike"], (
+                f"sort_by='count' was ignored for include_counts={include_counts}, "
+                f"include_files={include_files} — ordering must key off the authoritative "
+                f"counts, not the optional item field. Got {_tag_names(result)!r} instead "
+                "of count-descending order."
+            )
+
+    @pytest.mark.asyncio
+    async def test_sort_by_name_is_alphabetical_in_every_flag_combination(self, adversarial_order_vault):
+        for include_counts, include_files in FLAG_COMBINATIONS:
+            result = await list_tags(include_counts=include_counts, include_files=include_files, sort_by="name")
+
+            assert _tag_names(result) == ["alpha", "mike", "zulu"], (
+                f"sort_by='name' was not alphabetical for include_counts={include_counts}, "
+                f"include_files={include_files} — got {_tag_names(result)!r} instead of "
+                "name-ascending order."
+            )
+
+    @pytest.mark.asyncio
+    async def test_count_sort_order_is_identical_across_all_flag_combinations(self, adversarial_order_vault):
+        # Flags gate which optional fields are present on each item; they
+        # must never change the ORDER those items come back in.
+        orders = {}
+        for include_counts, include_files in FLAG_COMBINATIONS:
+            result = await list_tags(include_counts=include_counts, include_files=include_files, sort_by="count")
+            orders[(include_counts, include_files)] = _tag_names(result)
+
+        baseline_combo = FLAG_COMBINATIONS[0]
+        baseline_order = orders[baseline_combo]
+        for combo, order in orders.items():
+            assert order == baseline_order, (
+                f"sort_by='count' order for include_counts={combo[0]}, include_files={combo[1]} "
+                f"({order!r}) diverges from include_counts={baseline_combo[0]}, "
+                f"include_files={baseline_combo[1]} ({baseline_order!r}) — flags that only "
+                "control which optional fields are present must never affect ordering."
+            )
+
+    @pytest.mark.asyncio
+    async def test_name_sort_order_is_identical_across_all_flag_combinations(self, adversarial_order_vault):
+        orders = {}
+        for include_counts, include_files in FLAG_COMBINATIONS:
+            result = await list_tags(include_counts=include_counts, include_files=include_files, sort_by="name")
+            orders[(include_counts, include_files)] = _tag_names(result)
+
+        baseline_combo = FLAG_COMBINATIONS[0]
+        baseline_order = orders[baseline_combo]
+        for combo, order in orders.items():
+            assert order == baseline_order, (
+                f"sort_by='name' order for include_counts={combo[0]}, include_files={combo[1]} "
+                f"({order!r}) diverges from include_counts={baseline_combo[0]}, "
+                f"include_files={baseline_combo[1]} ({baseline_order!r}) — flags that only "
+                "control which optional fields are present must never affect ordering."
+            )
 
 
 if __name__ == "__main__":

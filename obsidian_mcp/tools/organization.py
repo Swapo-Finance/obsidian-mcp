@@ -1194,6 +1194,7 @@ async def list_tags(
     include_files: bool = False,
     offset: int = 0,
     limit: int = 100,
+    max_files_per_tag: int = 20,
     ctx=None
 ) -> dict:
     """
@@ -1260,17 +1261,27 @@ async def list_tags(
                 if include_counts:
                     tag_item["count"] = count
                 if include_files:
-                    tag_item["files"] = sorted(tags_by_name[tag])
+                    files = sorted(tags_by_name[tag])
+                    tag_item["files"] = files[:max_files_per_tag]
+                    # True total independent of include_counts, so callers
+                    # can detect truncation via len(files) < files_total.
+                    tag_item["files_total"] = count
                 tags.append(tag_item)
-            
-            # Sort based on preference
+
+            # Sort based on preference. Key off tag_counts (authoritative,
+            # always populated) rather than the optional "count" item field,
+            # so ordering doesn't silently degrade when include_counts=False.
             if sort_by == "count":
-                tags.sort(key=lambda x: x.get("count", 0), reverse=True)
+                tags.sort(key=lambda x: tag_counts[x["name"]], reverse=True)
             else:  # sort by name
                 tags.sort(key=lambda x: x["name"].lower())
         else:
-            # Just return tag names sorted
-            tags = sorted(tag_counts.keys(), key=str.lower)
+            # Just return tag names, sorted per sort_by. Mirrors the
+            # count-descending / stable-tie-break semantics used above.
+            if sort_by == "count":
+                tags = sorted(tag_counts.keys(), key=lambda tag: tag_counts[tag], reverse=True)
+            else:
+                tags = sorted(tag_counts.keys(), key=str.lower)
 
         # Paginate: real offset/limit slicing so truncation is visible via
         # returned/offset/limit instead of silently dropping tags.

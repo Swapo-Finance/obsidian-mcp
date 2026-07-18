@@ -790,23 +790,34 @@ List all unique tags used across your vault with usage statistics.
 - `include_counts` (default: `true`): Include usage count for each tag
 - `sort_by` (default: `"name"`): Sort by "name" or "count"
 - `include_files` (default: `false`): Include list of file paths that contain each tag
+- `offset` (default: `0`): Number of tags to skip, for paging past the first page
+- `limit` (default: `100`): Maximum number of tags to return in this page (1-1000)
+- `max_files_per_tag` (default: `20`): Maximum file paths to include per tag when `include_files=true` (1-1000); extra files are truncated
 
 **Returns:**
 ```json
 {
   "items": [
     {
-      "name": "project", 
+      "name": "project",
       "count": 42,
-      "files": ["Projects/Web.md", "Projects/Mobile.md"]  // if include_files=true
+      "files": ["Projects/Web.md", "Projects/Mobile.md"],  // if include_files=true, capped at max_files_per_tag
+      "files_total": 57  // if include_files=true — true file count before truncation
     },
     {"name": "meeting", "count": 38},
     {"name": "idea", "count": 15}
   ],
-  "total": 25,
+  "total": 25,      // total tags in the vault, not just this page
+  "returned": 3,    // tags in this page
+  "offset": 0,      // echoed offset
+  "limit": 100,     // echoed limit
   "scope": {"include_counts": true, "sort_by": "name", "include_files": false}
 }
 ```
+
+**Paging:** `limit` defaults to 100, so a vault with more tags than that only returns the first page. Page through with `offset`, and compare `total` to `returned` to see whether more remain.
+
+**Truncated files:** `len(files) < files_total` means that tag's file list was cut off at `max_files_per_tag`. For the complete list for one tag, use `search_notes_tool` with a `tag:<name>` query (it has its own pagination) instead of raising `max_files_per_tag`.
 
 **Note:** Hierarchical tags are listed as separate entries, showing both parent and full paths.
 

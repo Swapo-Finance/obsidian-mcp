@@ -1237,6 +1237,12 @@ async def list_tags_tool(
         le=1000,
         default=100
     )] = 100,
+    max_files_per_tag: Annotated[int, Field(
+        description="Maximum number of file paths to include per tag when include_files is true. Extra files are truncated rather than blowing up the payload (see files_total in the response).",
+        ge=1,
+        le=1000,
+        default=20
+    )] = 20,
     ctx: Optional[Context] = None
 ):
     """
@@ -1261,6 +1267,11 @@ async def list_tags_tool(
     - Returns a list of all file paths that contain each tag
     - Useful for bulk operations on files with specific tags
     - Paths are relative to vault root
+    - Capped at `max_files_per_tag` per tag (default 20, max 1000); each
+      item's `files_total` is the true per-tag count, so truncation is
+      visible via len(files) < files_total. Need the complete file list
+      for one specific tag? Use search_notes_tool with a `tag:` query
+      instead — it has its own pagination and isn't capped by this limit.
     
     When NOT to use:
     - Getting tags for a specific note (use get_note_info)
@@ -1285,10 +1296,12 @@ async def list_tags_tool(
     Returns:
         {items, total, returned, offset, limit, scope}. `items` holds up to
         `limit` tags starting at `offset`; `total` is the full vault-wide
-        tag count regardless of paging.
+        tag count regardless of paging. When include_files=true, each
+        item's `files` list is capped at `max_files_per_tag` and carries
+        `files_total` (the true per-tag count) alongside it.
     """
     try:
-        return await list_tags(include_counts, sort_by, include_files, offset, limit, ctx)
+        return await list_tags(include_counts, sort_by, include_files, offset, limit, max_files_per_tag, ctx)
     except ValueError as e:
         raise ToolError(str(e))
     except Exception as e:
