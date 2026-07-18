@@ -63,7 +63,7 @@ async def add_daily_note(
     daily_path = f"{vault.daily_dir}/{day.isoformat()}.md" if vault.daily_dir else f"{day.isoformat()}.md"
 
     if ctx:
-        ctx.info(f"Appending to daily note: {daily_path}")
+        await ctx.info(f"Appending to daily note: {daily_path}")
 
     try:
         existing = await vault.read_note(daily_path)

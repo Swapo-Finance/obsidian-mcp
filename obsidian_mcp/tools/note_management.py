@@ -196,7 +196,7 @@ async def read_note(
     path = sanitize_path(path)
     
     if ctx:
-        ctx.info(f"Reading note: {path}")
+        await ctx.info(f"Reading note: {path}")
     
     vault = get_vault()
     try:
@@ -234,7 +234,7 @@ async def _search_and_load_image(
     """
     try:
         if ctx:
-            ctx.info(f"Loading embedded image: {image_ref}")
+            await ctx.info(f"Loading embedded image: {image_ref}")
         
         # Try to read the image directly (with resizing for embedded images)
         try:
@@ -242,7 +242,7 @@ async def _search_and_load_image(
         except FileNotFoundError:
             # If not found at direct path, search for it
             if ctx:
-                ctx.info(f"Image not found at direct path, searching for: {image_ref}")
+                await ctx.info(f"Image not found at direct path, searching for: {image_ref}")
             
             # Extract just the filename
             filename = image_ref.split('/')[-1]
@@ -251,7 +251,7 @@ async def _search_and_load_image(
             found_path = await vault.find_image(filename)
             if found_path:
                 if ctx:
-                    ctx.info(f"Found image at: {found_path}")
+                    await ctx.info(f"Found image at: {found_path}")
                 image_data = await vault.read_image(found_path, max_width=800)
             else:
                 image_data = None
@@ -263,12 +263,12 @@ async def _search_and_load_image(
                 "mime_type": image_data["mime_type"]
             }
         elif ctx:
-            ctx.info(f"Could not find image anywhere: {image_ref}")
+            await ctx.info(f"Could not find image anywhere: {image_ref}")
             
     except Exception as e:
         # Log error but return None
         if ctx:
-            ctx.info(f"Failed to load image {image_ref}: {str(e)}")
+            await ctx.info(f"Failed to load image {image_ref}: {str(e)}")
     
     return None
 
@@ -368,7 +368,7 @@ async def create_note(
     path = apply_slug_style_to_path(vault, path)  # OBSIDIAN_SLUG_STYLE=kebab
 
     if ctx:
-        ctx.info(f"Creating note: {path}")
+        await ctx.info(f"Creating note: {path}")
 
     # Template conformance (folder rule, if any) + wikilink validation +
     # kebab tag/name normalization. Raises ValueError before anything is
@@ -454,7 +454,7 @@ async def update_note(
     path = sanitize_path(path)
     
     if ctx:
-        ctx.info(f"Updating note: {path}")
+        await ctx.info(f"Updating note: {path}")
     
     vault = get_vault()
     
@@ -584,7 +584,7 @@ async def edit_note_section(
     path = sanitize_path(path)
     
     if ctx:
-        ctx.info(f"Editing section '{section_identifier}' in: {path}")
+        await ctx.info(f"Editing section '{section_identifier}' in: {path}")
     
     vault = get_vault()
     
@@ -758,7 +758,7 @@ async def delete_note(path: str, ctx: Optional[Context] = None) -> dict:
     path = sanitize_path(path)
     
     if ctx:
-        ctx.info(f"Deleting note: {path}")
+        await ctx.info(f"Deleting note: {path}")
     
     vault = get_vault()
     

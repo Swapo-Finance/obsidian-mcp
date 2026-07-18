@@ -37,7 +37,7 @@ async def get_note_template(path: str, ctx: Optional[Context] = None) -> Dict[st
     raw = path or ""
 
     if ctx:
-        ctx.info(f"Looking up template rule for: {raw or '(vault root)'}")
+        await ctx.info(f"Looking up template rule for: {raw or '(vault root)'}")
 
     is_note = raw.endswith(".md") or raw.endswith(".markdown")
     folder_part = str(PurePosixPath(raw).parent) if is_note else raw
@@ -80,7 +80,7 @@ async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
         {env_vars: [...], path_anchoring: str, tools: [{name, purpose}, ...]}
     """
     if ctx:
-        ctx.info("Building help catalog...")
+        await ctx.info("Building help catalog...")
 
     vault = get_vault()
 

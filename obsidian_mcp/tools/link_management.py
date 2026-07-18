@@ -151,7 +151,7 @@ async def get_backlinks(
         raise ValueError(error)
     
     if ctx:
-        ctx.info(f"Finding backlinks to: {path}")
+        await ctx.info(f"Finding backlinks to: {path}")
     
     vault = get_vault()
     
@@ -187,8 +187,8 @@ async def get_backlinks(
     ]
 
     if ctx:
-        ctx.info(f"Will match against variations: {target_names}")
-        ctx.info(f"Scanning {len(candidate_note_paths)} candidate notes (of {len(all_forward_links)} total)...")
+        await ctx.info(f"Will match against variations: {target_names}")
+        await ctx.info(f"Scanning {len(candidate_note_paths)} candidate notes (of {len(all_forward_links)} total)...")
 
     # Process notes in parallel batches
     backlinks = []
@@ -260,7 +260,7 @@ async def get_backlinks(
             backlinks.extend(note_backlinks)
     
     if ctx:
-        ctx.info(f"Found {len(backlinks)} backlinks")
+        await ctx.info(f"Found {len(backlinks)} backlinks")
 
     # Light enrichment (spec section 10.4's closing sentence): add the
     # linking note's cached name/description to each finding, from the
@@ -334,7 +334,7 @@ async def get_outgoing_links(
         raise ValueError(error)
     
     if ctx:
-        ctx.info(f"Extracting links from: {path}")
+        await ctx.info(f"Extracting links from: {path}")
     
     vault = get_vault()
     
@@ -352,11 +352,11 @@ async def get_outgoing_links(
     # Check validity if requested - in batch!
     if check_validity:
         if ctx:
-            ctx.info(f"Checking validity of {len(links)} links...")
+            await ctx.info(f"Checking validity of {len(links)} links...")
         links = await check_links_validity_batch(vault, links)
     
     if ctx:
-        ctx.info(f"Found {len(links)} outgoing links")
+        await ctx.info(f"Found {len(links)} outgoing links")
     
     # Return standardized analysis results structure
     return {
@@ -420,7 +420,7 @@ async def find_broken_links(
             scope = f"directory: {directory}"
         else:
             scope = "entire vault"
-        ctx.info(f"Checking for broken links in {scope}")
+        await ctx.info(f"Checking for broken links in {scope}")
     
     vault = get_vault()
     
@@ -440,7 +440,7 @@ async def find_broken_links(
             notes_to_check = all_notes
     
     if ctx:
-        ctx.info(f"Checking {len(notes_to_check)} notes...")
+        await ctx.info(f"Checking {len(notes_to_check)} notes...")
     
     # Collect all links from all notes. single_note reads directly (matches
     # the pre-existing behavior of working even when the path isn't already
@@ -470,7 +470,7 @@ async def find_broken_links(
             all_link_paths.add(link['path'])
     
     if ctx:
-        ctx.info(f"Checking validity of {len(all_link_paths)} unique links...")
+        await ctx.info(f"Checking validity of {len(all_link_paths)} unique links...")
     
     # Check which links exist - in one batch!
     found_paths = await find_notes_by_names(vault, list(all_link_paths))
@@ -492,7 +492,7 @@ async def find_broken_links(
                 affected_notes_set.add(note_path)
     
     if ctx:
-        ctx.info(f"Found {len(broken_links)} broken links in {len(affected_notes_set)} notes")
+        await ctx.info(f"Found {len(broken_links)} broken links in {len(affected_notes_set)} notes")
 
     # Sort broken links by source path
     broken_links.sort(key=lambda x: x['source_path'])

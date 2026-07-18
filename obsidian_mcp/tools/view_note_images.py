@@ -47,7 +47,7 @@ async def view_note_images(
     path = sanitize_path(path)
     
     if ctx:
-        ctx.info(f"Extracting images from note: {path}")
+        await ctx.info(f"Extracting images from note: {path}")
     
     vault = get_vault()
     
@@ -73,11 +73,11 @@ async def view_note_images(
     
     if not image_paths:
         if ctx:
-            ctx.info("No images found in this note")
+            await ctx.info("No images found in this note")
         return []
     
     if ctx:
-        ctx.info(f"Found {len(image_paths)} image(s) in note")
+        await ctx.info(f"Found {len(image_paths)} image(s) in note")
     
     # If specific index requested, validate it
     if image_index is not None:
@@ -91,7 +91,7 @@ async def view_note_images(
     for i, image_ref in enumerate(image_paths):
         try:
             if ctx:
-                ctx.info(f"Loading image {i+1}/{len(image_paths)}: {image_ref}")
+                await ctx.info(f"Loading image {i+1}/{len(image_paths)}: {image_ref}")
             
             # Try to read the image directly
             try:
@@ -102,11 +102,11 @@ async def view_note_images(
                 found_path = await vault.find_image(filename)
                 if found_path:
                     if ctx:
-                        ctx.info(f"Found image at: {found_path}")
+                        await ctx.info(f"Found image at: {found_path}")
                     image_data = await vault.read_image(found_path, max_width=max_width)
                 else:
                     if ctx:
-                        ctx.info(f"Could not find image: {image_ref}")
+                        await ctx.info(f"Could not find image: {image_ref}")
                     continue
             
             # Convert to Image object
@@ -129,7 +129,7 @@ async def view_note_images(
             
         except Exception as e:
             if ctx:
-                ctx.info(f"Error loading image {image_ref}: {str(e)}")
+                await ctx.info(f"Error loading image {image_ref}: {str(e)}")
             continue
     
     return images

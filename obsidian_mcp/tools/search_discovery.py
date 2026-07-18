@@ -498,7 +498,7 @@ async def search_notes(
         raise ValueError(error)
     
     if ctx:
-        ctx.info(f"Searching notes with query: {query}")
+        await ctx.info(f"Searching notes with query: {query}")
     
     vault = get_vault()
     
@@ -591,7 +591,7 @@ async def search_notes(
         return response
     except Exception as e:
         if ctx:
-            ctx.info(f"Search failed: {str(e)}")
+            await ctx.info(f"Search failed: {str(e)}")
         # Return standardized error structure
         return {
             "results": [],
@@ -664,7 +664,7 @@ async def search_by_date(
         query_description = f"Notes {date_type} exactly {days_ago} days ago"
     
     if ctx:
-        ctx.info(f"Searching for {query_description}")
+        await ctx.info(f"Searching for {query_description}")
     
     vault = get_vault()
     
@@ -735,7 +735,7 @@ async def search_by_date(
         
     except Exception as e:
         if ctx:
-            ctx.info(f"Date search failed: {str(e)}")
+            await ctx.info(f"Date search failed: {str(e)}")
         # Return standardized error structure
         return {
             "results": [],
@@ -799,7 +799,7 @@ async def search_by_property(
         >>> await search_by_property("title", "project", "contains")
     """
     if ctx:
-        ctx.info(f"Searching by property: {property_name} {operator} {value}")
+        await ctx.info(f"Searching by property: {property_name} {operator} {value}")
     
     # Validate operator
     valid_operators = ["=", "equals", "!=", ">", "<", ">=", "<=", "contains", "exists"]
@@ -858,7 +858,7 @@ async def search_by_property(
         }
     except Exception as e:
         if ctx:
-            ctx.info(f"Property search failed: {str(e)}")
+            await ctx.info(f"Property search failed: {str(e)}")
         # Return standardized error structure
         return {
             "results": [],
@@ -913,9 +913,9 @@ async def list_notes(
     
     if ctx:
         if directory:
-            ctx.info(f"Listing notes in: {directory}")
+            await ctx.info(f"Listing notes in: {directory}")
         else:
-            ctx.info("Listing all notes in vault")
+            await ctx.info("Listing all notes in vault")
     
     vault = get_vault()
     
@@ -943,7 +943,7 @@ async def list_notes(
         }
     except Exception as e:
         if ctx:
-            ctx.info(f"Failed to list notes: {str(e)}")
+            await ctx.info(f"Failed to list notes: {str(e)}")
         # Return standardized error structure
         return {
             "items": [],
@@ -996,9 +996,9 @@ async def list_folders(
     
     if ctx:
         if directory:
-            ctx.info(f"Listing folders in: {directory}")
+            await ctx.info(f"Listing folders in: {directory}")
         else:
-            ctx.info("Listing all folders in vault")
+            await ctx.info("Listing all folders in vault")
     
     vault = get_vault()
     
@@ -1055,7 +1055,7 @@ async def list_folders(
         }
     except Exception as e:
         if ctx:
-            ctx.info(f"Failed to list folders: {str(e)}")
+            await ctx.info(f"Failed to list folders: {str(e)}")
         # Return standardized error structure
         return {
             "items": [],
@@ -1170,7 +1170,7 @@ async def search_by_regex(
                 raise ValueError(f"Unknown regex flag: {flag}. Supported flags: ignorecase/i, multiline/m, dotall/s")
     
     if ctx:
-        ctx.info(f"Searching with regex pattern: {pattern}")
+        await ctx.info(f"Searching with regex pattern: {pattern}")
     
     vault = get_vault()
     
@@ -1231,7 +1231,7 @@ async def search_by_regex(
         raise e
     except Exception as e:
         if ctx:
-            ctx.info(f"Regex search failed: {str(e)}")
+            await ctx.info(f"Regex search failed: {str(e)}")
         # Return standardized error structure
         return {
             "results": [],
