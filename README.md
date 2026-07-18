@@ -792,7 +792,7 @@ List all unique tags used across your vault with usage statistics.
 - `include_files` (default: `false`): Include list of file paths that contain each tag
 - `offset` (default: `0`): Number of tags to skip, for paging past the first page
 - `limit` (default: `100`): Maximum number of tags to return in this page (1-1000)
-- `max_files_per_tag` (default: `20`): Maximum file paths to include per tag when `include_files=true` (1-1000); extra files are truncated
+- `max_files_per_tag` (default: `3`): Maximum file paths to include per tag when `include_files=true` (1-300); extra files are truncated
 
 **Returns:**
 ```json
@@ -818,6 +818,8 @@ List all unique tags used across your vault with usage statistics.
 **Paging:** `limit` defaults to 100, so a vault with more tags than that only returns the first page. Page through with `offset`, and compare `total` to `returned` to see whether more remain.
 
 **Truncated files:** `len(files) < files_total` means that tag's file list was cut off at `max_files_per_tag`. For the complete list for one tag, use `search_notes_tool` with a `tag:<name>` query (it has its own pagination) instead of raising `max_files_per_tag`.
+
+**Combined cost cap:** When `include_files=true`, `limit * max_files_per_tag` must not exceed `300`, or the call raises an error before doing any work. Lower one of the two, or use `search_notes_tool` with a `tag:<name>` query for one tag's complete file list instead.
 
 **Note:** Lists literal tags as they appear in the vault's tag index, not synthesized parent paths — a tag like `project` appears only if some note carries it directly, independent of whether `project/web` also exists elsewhere. Hierarchical parent/child matching happens in `search_notes_tool` with a `tag:` query, not in this listing.
 
