@@ -31,6 +31,7 @@ os.environ["OBSIDIAN_VAULT_PATH"] = tempfile.mkdtemp(prefix="obsidian_server_boo
 from fastmcp.exceptions import ToolError  # noqa: E402
 
 from obsidian_mcp.server import add_daily_note_tool, get_note_template_tool, help_tool  # noqa: E402
+from obsidian_mcp.tools.vault_meta import _first_line  # noqa: E402
 from obsidian_mcp.utils.filesystem import init_vault  # noqa: E402
 
 
@@ -120,6 +121,51 @@ class TestHelpToolWrapper:
     async def test_path_anchoring_explanation_present(self, vault):
         result = await help_tool.fn()
         assert "vault-relative" in result["path_anchoring"]
+
+    @pytest.mark.asyncio
+    async def test_tools_catalog_matches_live_registry_no_drift(self, vault):
+        # get_help derives `tools` from the live FastMCP registry (server.py's
+        # `mcp`) instead of a hand-maintained list. This is the test whose
+        # whole point is to fail the moment someone registers/renames a tool
+        # without get_help picking it up automatically — if it ever fails,
+        # that drift (not a broken fixture) is the cause.
+        from obsidian_mcp.server import mcp
+
+        result = await help_tool.fn()
+        help_names = {t["name"] for t in result["tools"]}
+        registry_names = set((await mcp.get_tools()).keys())
+
+        assert help_names == registry_names, (
+            "help_tool's tools catalog has drifted from the live FastMCP tool "
+            "registry (obsidian_mcp.server.mcp.get_tools()) - a tool was "
+            "registered or renamed without get_help's derivation picking it "
+            f"up. Symmetric difference: {help_names ^ registry_names}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_each_tool_purpose_is_a_nonempty_single_line(self, vault):
+        result = await help_tool.fn()
+
+        for entry in result["tools"]:
+            assert entry["purpose"], f"{entry['name']} has an empty purpose"
+            assert "\n" not in entry["purpose"], f"{entry['name']} purpose spans multiple lines"
+
+    @pytest.mark.asyncio
+    async def test_log_level_env_var_present_with_info_default(self, vault):
+        result = await help_tool.fn()
+        row = next(r for r in result["env_vars"] if r["name"] == "OBSIDIAN_LOG_LEVEL")
+
+        assert row["default"] == "INFO"
+        assert row["current"] == "INFO"
+
+    @pytest.mark.asyncio
+    async def test_log_level_env_var_current_tracks_env_override(self, vault, monkeypatch):
+        monkeypatch.setenv("OBSIDIAN_LOG_LEVEL", "DEBUG")
+
+        result = await help_tool.fn()
+        row = next(r for r in result["env_vars"] if r["name"] == "OBSIDIAN_LOG_LEVEL")
+
+        assert row["current"] == "DEBUG"
 
 
 class TestAddDailyNoteToolWrapper:
@@ -254,6 +300,48 @@ class TestContextAnnotations:
             assert ctx_param.default is None, (
                 f"{tool.fn.__name__}: ctx default is {ctx_param.default}, expected None"
             )
+
+
+class TestFirstLineHelper:
+    """_first_line (obsidian_mcp/tools/vault_meta.py): pure docstring-parsing
+    helper backing get_help's per-tool `purpose` field. No vault needed."""
+
+    def test_multiline_docstring_returns_first_nonempty_line_stripped(self):
+        assert _first_line("  First line.  \nSecond line.\nThird.\n") == "First line."
+
+    def test_leading_blank_lines_are_skipped(self):
+        assert _first_line("\n   \n\nActual first line.\nMore.") == "Actual first line."
+
+    def test_none_returns_empty_string(self):
+        assert _first_line(None) == ""
+
+    def test_empty_string_returns_empty_string(self):
+        assert _first_line("") == ""
+
+
+class TestTagToolsDocstringRegressionGuards:
+    """Cheap pins for the P2 docstring corrections - not exhaustive docstring
+    testing, just guarding the specific false claims that were removed so
+    they can't silently come back. FunctionTool wrappers don't proxy
+    __doc__ (it's None on the wrapper itself - confirmed via .fn), so these
+    read through .fn.__doc__, same as TestContextAnnotations above."""
+
+    def test_list_tags_tool_no_longer_claims_synthesized_hierarchy_paths(self):
+        from obsidian_mcp.server import list_tags_tool
+
+        assert 'both "project" and "project/web"' not in list_tags_tool.fn.__doc__
+
+    def test_remove_tags_tool_no_longer_claims_count_of_removed(self):
+        from obsidian_mcp.server import remove_tags_tool
+
+        assert "count of removed" not in remove_tags_tool.fn.__doc__
+
+    def test_add_update_remove_tags_examples_mention_real_response_keys(self):
+        from obsidian_mcp.tools.organization import add_tags, remove_tags, update_tags
+
+        for fn in (add_tags, update_tags, remove_tags):
+            assert "changes" in fn.__doc__, f"{fn.__name__} docstring example missing 'changes'"
+            assert "before" in fn.__doc__, f"{fn.__name__} docstring example missing 'before'"
 
 
 if __name__ == "__main__":

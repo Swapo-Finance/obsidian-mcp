@@ -861,7 +861,9 @@ async def add_tags_tool(
     - Replacing all tags (use update_tags with merge=False)
     
     Returns:
-        Updated tag list for the note
+        {success, path, operation: "added", tags: {before, after, changes}} —
+        tags.changes.added lists what was added (tags.changes.removed is
+        always empty for this operation).
     """
     try:
         return await add_tags(path, tags, ctx)
@@ -946,7 +948,9 @@ async def remove_tags_tool(
     list them explicitly or use update_tags.
     
     Returns:
-        Updated tag list after removal, with count of removed tags
+        {success, path, operation: "removed", tags: {before, after, changes}} —
+        tags.changes.removed lists exactly which tags were removed (there is
+        no separate count field).
     """
     try:
         return await remove_tags(path, tags, ctx)
@@ -1222,6 +1226,17 @@ async def list_tags_tool(
         description="Include the list of file paths that contain each tag",
         default=False
     )] = False,
+    offset: Annotated[int, Field(
+        description="Number of tags to skip, for paging past the first page of results.",
+        ge=0,
+        default=0
+    )] = 0,
+    limit: Annotated[int, Field(
+        description="Maximum number of tags to return in this page. Page through the rest with offset.",
+        ge=1,
+        le=1000,
+        default=100
+    )] = 100,
     ctx: Optional[Context] = None
 ):
     """
@@ -1236,7 +1251,9 @@ async def list_tags_tool(
     - Finding all files that use a specific tag (with include_files=true)
     
     Hierarchical tags:
-    - Lists both parent and full hierarchical paths (e.g., both "project" and "project/web")
+    - Lists the literal tags present in the vault's tag index, not synthesized
+      parent paths — "project" appears only if some note is tagged "project"
+      directly, independent of whether "project/web" also exists elsewhere.
     - Shows how nested tags are organized in your vault
     - Helps identify opportunities for better tag organization
     
@@ -1255,12 +1272,23 @@ async def list_tags_tool(
     - For vaults with >5000 notes: May be slow (10+ seconds)
     - Uses batched concurrent requests to optimize performance
     - include_files=true adds minimal overhead
-    
+
+    Pagination (offset/limit):
+    - Results are capped at `limit` tags per call (default 100, max 1000) so
+      a large vault (especially with include_files=true) can't overflow the
+      client in one response.
+    - `total` is the vault-wide tag count; `returned` is how many tags are
+      in this page (len(items)). Page through the rest by increasing
+      `offset` (e.g. offset=0, then offset=limit, ...) until `returned` is
+      less than `limit` or `offset >= total`.
+
     Returns:
-        All unique tags with optional usage counts and file paths
+        {items, total, returned, offset, limit, scope}. `items` holds up to
+        `limit` tags starting at `offset`; `total` is the full vault-wide
+        tag count regardless of paging.
     """
     try:
-        return await list_tags(include_counts, sort_by, include_files, ctx)
+        return await list_tags(include_counts, sort_by, include_files, offset, limit, ctx)
     except ValueError as e:
         raise ToolError(str(e))
     except Exception as e:

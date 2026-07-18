@@ -743,9 +743,17 @@ async def add_tags(
     Example:
         >>> await add_tags("Projects/AI.md", ["machine-learning", "research"], ctx=ctx)
         {
+            "success": True,
             "path": "Projects/AI.md",
-            "tags_added": ["machine-learning", "research"],
-            "all_tags": ["ai", "project", "machine-learning", "research"]
+            "operation": "added",
+            "tags": {
+                "before": ["ai", "project"],
+                "after": ["ai", "project", "machine-learning", "research"],
+                "changes": {
+                    "added": ["machine-learning", "research"],
+                    "removed": []
+                }
+            }
         }
     """
     # Validate path
@@ -825,10 +833,19 @@ async def update_tags(
         >>> # After analyzing a note about machine learning project
         >>> await update_tags("Projects/ML Research.md", ["ai", "research", "neural-networks"], ctx=ctx)
         {
+            "success": True,
             "path": "Projects/ML Research.md",
-            "previous_tags": ["project", "todo"],
-            "new_tags": ["ai", "research", "neural-networks"],
-            "operation": "replaced"
+            "operation": "updated",
+            "tags": {
+                "before": ["project", "todo"],
+                "after": ["ai", "research", "neural-networks"],
+                "changes": {
+                    "added": ["ai", "research", "neural-networks"],
+                    "removed": ["project", "todo"],
+                    "merge_mode": False,
+                    "operation_type": "replaced"
+                }
+            }
         }
     """
     # Validate path
@@ -919,9 +936,17 @@ async def remove_tags(
     Example:
         >>> await remove_tags("Projects/AI.md", ["outdated"], ctx=ctx)
         {
+            "success": True,
             "path": "Projects/AI.md",
-            "tags_removed": ["outdated"],
-            "remaining_tags": ["ai", "project", "machine-learning"]
+            "operation": "removed",
+            "tags": {
+                "before": ["ai", "project", "machine-learning", "outdated"],
+                "after": ["ai", "project", "machine-learning"],
+                "changes": {
+                    "added": [],
+                    "removed": ["outdated"]
+                }
+            }
         }
     """
     # Validate path
@@ -1167,6 +1192,8 @@ async def list_tags(
     include_counts: bool = True,
     sort_by: str = "name",
     include_files: bool = False,
+    offset: int = 0,
+    limit: int = 100,
     ctx=None
 ) -> dict:
     """
@@ -1244,11 +1271,18 @@ async def list_tags(
         else:
             # Just return tag names sorted
             tags = sorted(tag_counts.keys(), key=str.lower)
-        
+
+        # Paginate: real offset/limit slicing so truncation is visible via
+        # returned/offset/limit instead of silently dropping tags.
+        page = tags[offset:offset + limit]
+
         # Return standardized list results structure
         return {
-            "items": tags,
+            "items": page,
             "total": len(tag_counts),
+            "returned": len(page),
+            "offset": offset,
+            "limit": limit,
             "scope": {
                 "include_counts": include_counts,
                 "sort_by": sort_by,
