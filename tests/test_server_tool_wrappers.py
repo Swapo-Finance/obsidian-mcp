@@ -30,7 +30,8 @@ os.environ["OBSIDIAN_VAULT_PATH"] = tempfile.mkdtemp(prefix="obsidian_server_boo
 
 from fastmcp.exceptions import ToolError  # noqa: E402
 
-from obsidian_mcp.server import add_daily_note_tool, get_note_template_tool, help_tool  # noqa: E402
+from obsidian_mcp.server import add_daily_note_tool, get_note_template_tool, help_tool, list_tags_tool  # noqa: E402
+from obsidian_mcp.tools.note_management import create_note  # noqa: E402
 from obsidian_mcp.tools.vault_meta import _first_line  # noqa: E402
 from obsidian_mcp.utils.filesystem import init_vault  # noqa: E402
 
@@ -182,6 +183,70 @@ class TestAddDailyNoteToolWrapper:
         # only server.py's wrapper converts it to ToolError.
         with pytest.raises(ToolError):
             await add_daily_note_tool.fn(content="Entry.", date="not-a-date")
+
+
+class TestListTagsToolWrapper:
+    """list_tags_tool (server.py) forwards offset/limit/max_files_per_tag/etc
+    to list_tags positionally: `list_tags(include_counts, sort_by,
+    include_files, offset, limit, max_files_per_tag, ctx)`. All three of
+    offset/limit/max_files_per_tag are plain ints with overlapping valid
+    ranges, so a future reorder of either signature (e.g. inserting a new
+    Annotated param in the middle, or reordering the call site) would
+    silently swap values into the wrong parameter -- no exception, just a
+    wrong page or a wrong truncation cap. test_list_tags_pagination.py
+    deliberately calls the list_tags impl directly and never exercises this
+    wrapper (see that file's module docstring); nothing else in this suite
+    calls list_tags_tool.fn either, so the forwarding itself was untested."""
+
+    @pytest.mark.asyncio
+    async def test_offset_and_limit_reach_the_correct_params(self, vault):
+        # 5 name-sorted tags; offset=1/limit=3 (deliberately different
+        # values) select a distinguishable window -- if offset and limit
+        # were swapped at the call site, this would select tag-03 alone
+        # instead of [tag-01, tag-02, tag-03].
+        for i in range(5):
+            await create_note(f"Note{i}.md", f"---\ntags: [tag-{i:02d}]\n---\n# Note {i}\n")
+
+        result = await list_tags_tool.fn(sort_by="name", offset=1, limit=3)
+
+        assert [t["name"] for t in result["items"]] == ["tag-01", "tag-02", "tag-03"]
+        assert result["offset"] == 1
+        assert result["limit"] == 3
+        assert result["total"] == 5
+
+    @pytest.mark.asyncio
+    async def test_max_files_per_tag_reaches_its_own_param_not_limit_or_offset(self, vault):
+        # offset/limit left at their defaults (0/100); if max_files_per_tag's
+        # value landed in either slot instead, the real max_files_per_tag
+        # would silently fall back to its default (20) and the 4 files
+        # below would come back uncapped instead of capped at 2.
+        for name in ("Popular0.md", "Popular1.md", "Popular2.md", "Popular3.md"):
+            await create_note(name, "---\ntags: [popular]\n---\n# Popular\n")
+
+        result = await list_tags_tool.fn(include_files=True, max_files_per_tag=2)
+
+        popular = result["items"][0]
+        assert popular["name"] == "popular"
+        assert len(popular["files"]) == 2
+        assert popular["files_total"] == 4
+
+    @pytest.mark.asyncio
+    async def test_invalid_sort_by_raises_tool_error(self, vault):
+        # ValueError -> ToolError conversion only exists in server.py's
+        # wrapper (same pattern as TestGetNoteTemplateToolWrapper /
+        # TestAddDailyNoteToolWrapper above) -- calling list_tags() directly
+        # would surface a bare ValueError instead.
+        with pytest.raises(ToolError):
+            await list_tags_tool.fn(sort_by="invalid")
+
+    @pytest.mark.asyncio
+    async def test_file_cost_ceiling_over_limit_raises_tool_error(self, vault):
+        # FIX B's combined-cost guard (limit * max_files_per_tag > 300) is
+        # the actual security fix -- it must be reachable through the real
+        # MCP tool, not just the internal list_tags() function, since the
+        # wrapper is the real attack surface a client calls into.
+        with pytest.raises(ToolError):
+            await list_tags_tool.fn(include_files=True, limit=1000, max_files_per_tag=1000)
 
 
 class TestContextAnnotations:

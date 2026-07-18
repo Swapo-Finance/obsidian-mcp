@@ -819,7 +819,7 @@ List all unique tags used across your vault with usage statistics.
 
 **Truncated files:** `len(files) < files_total` means that tag's file list was cut off at `max_files_per_tag`. For the complete list for one tag, use `search_notes_tool` with a `tag:<name>` query (it has its own pagination) instead of raising `max_files_per_tag`.
 
-**Note:** Hierarchical tags are listed as separate entries, showing both parent and full paths.
+**Note:** Lists literal tags as they appear in the vault's tag index, not synthesized parent paths — a tag like `project` appears only if some note carries it directly, independent of whether `project/web` also exists elsewhere. Hierarchical parent/child matching happens in `search_notes_tool` with a `tag:` query, not in this listing.
 
 **Performance Notes:**
 - Fast for small vaults (<1000 notes)

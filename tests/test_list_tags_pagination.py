@@ -313,11 +313,21 @@ class TestListTagsMaxFilesPerTagCap:
         assert popular["files"] == POPULAR_FILES[:3]
 
     @pytest.mark.asyncio
-    async def test_default_cap_does_not_truncate_small_vault(self, heavy_tag_vault):
-        result = await list_tags(include_files=True)  # max_files_per_tag defaults to 20
+    async def test_default_cap_truncates_above_it_but_not_below(self, heavy_tag_vault):
+        # max_files_per_tag's default was tightened 20 -> 3 (FIX B combined
+        # cost ceiling: limit=100 x max_files_per_tag=20 could build a
+        # ~512KB worst-case response; x3 keeps that at ~74KB). So the
+        # default now DOES truncate 'popular' (8 files); 'rare' (1 file, do
+        # heavy_tag_vault) stays untruncated -- proving the cap is real
+        # without hardcoding a vault where nothing is ever capped.
+        result = await list_tags(include_files=True)  # max_files_per_tag defaults to 3
 
         popular = next(t for t in result["items"] if t["name"] == "popular")
-        assert len(popular["files"]) == popular["files_total"] == 8
+        assert len(popular["files"]) == 3
+        assert popular["files_total"] == 8
+
+        rare = next(t for t in result["items"] if t["name"] == "rare")
+        assert len(rare["files"]) == rare["files_total"] == 1
 
     @pytest.mark.asyncio
     async def test_no_files_or_files_total_keys_when_include_files_false(self, heavy_tag_vault):
@@ -450,6 +460,57 @@ class TestListTagsSortOrderFlagMatrix:
                 f"include_files={baseline_combo[1]} ({baseline_order!r}) — flags that only "
                 "control which optional fields are present must never affect ordering."
             )
+
+
+class TestListTagsParameterValidation:
+    """FIX A: offset/limit/max_files_per_tag must validate inside list_tags()
+    itself. The pydantic Field(ge=...) bounds on list_tags_tool only protect
+    calls made through that MCP wrapper -- this whole file calls the impl
+    directly by design (see module docstring), so without this guard a
+    negative offset/limit silently mis-slices instead of erroring (e.g.
+    offset=-5 on a 14-tag list used to return the LAST 5 tags, no exception)."""
+
+    @pytest.mark.asyncio
+    async def test_negative_offset_raises_value_error(self, many_tags_vault):
+        with pytest.raises(ValueError, match="offset"):
+            await list_tags(offset=-5)
+
+    @pytest.mark.asyncio
+    async def test_limit_below_one_raises_value_error(self, many_tags_vault):
+        with pytest.raises(ValueError, match="limit"):
+            await list_tags(limit=0)
+
+    @pytest.mark.asyncio
+    async def test_max_files_per_tag_below_one_raises_value_error(self, many_tags_vault):
+        with pytest.raises(ValueError, match="max_files_per_tag"):
+            await list_tags(include_files=True, max_files_per_tag=0)
+
+
+class TestListTagsFileCostCeiling:
+    """FIX B: limit * max_files_per_tag is capped at 300 when
+    include_files=True. Without this, the worst schema-valid combo
+    (limit=1000, max_files_per_tag=1000) builds a ~1,000,000-path response
+    -- tens of MB, measured -- in one call; even the OLD default
+    (limit=100 x max_files_per_tag=20) measured ~512KB worst case, the same
+    order of magnitude as the 177KB response that originally overflowed the
+    MCP client."""
+
+    @pytest.mark.asyncio
+    async def test_combo_at_ceiling_succeeds(self, many_tags_vault):
+        result = await list_tags(include_files=True, limit=100, max_files_per_tag=3)
+        assert result["returned"] == TAG_COUNT  # 14 tags exist, well under limit
+
+    @pytest.mark.asyncio
+    async def test_combo_over_ceiling_raises_value_error(self, many_tags_vault):
+        with pytest.raises(ValueError, match="300"):
+            await list_tags(include_files=True, limit=100, max_files_per_tag=4)
+
+    @pytest.mark.asyncio
+    async def test_ceiling_not_enforced_when_include_files_false(self, many_tags_vault):
+        # Same over-ceiling product, but include_files=False means no file
+        # lists are built at all -- nothing to cap.
+        result = await list_tags(include_files=False, limit=1000, max_files_per_tag=1000)
+        assert result["total"] == TAG_COUNT
 
 
 if __name__ == "__main__":
