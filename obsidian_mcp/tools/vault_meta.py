@@ -66,6 +66,17 @@ def _env_row(name: str, type_: str, default: str, current: str, description: str
     }
 
 
+def _first_line(text: Optional[str]) -> str:
+    """First non-empty stripped line of a (possibly multi-line) docstring."""
+    if not text:
+        return ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
 async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
     """
     Static + runtime catalog of every env var (with its current effective
@@ -95,6 +106,12 @@ async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
             "OBSIDIAN_VAULT_PATH", "string (required)", "(none)", str(vault.vault_path),
             "Absolute (or ~-expanded) path to the Obsidian vault this server exposes.",
             "/Users/you/vaults/brain",
+        ),
+        _env_row(
+            "OBSIDIAN_LOG_LEVEL", "DEBUG|INFO|WARNING|ERROR|CRITICAL", "INFO", os.getenv("OBSIDIAN_LOG_LEVEL", "INFO"),
+            "Python logging level for the server's root logger, set once at process "
+            "startup via logging.basicConfig.",
+            "DEBUG",
         ),
         _env_row(
             "OBSIDIAN_INDEX_UPDATE_INTERVAL", "int seconds", "300", str(vault._index_update_interval),
@@ -193,37 +210,14 @@ async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
         ),
     ]
 
+    # Derived from the live FastMCP registry (not hardcoded) so this list can
+    # never drift from the actual set of registered tools.
+    from ..server import mcp  # deferred import: avoids circular import at module load
+
+    tools_registry = await mcp.get_tools()
     tools = [
-        {"name": "read_note_tool", "purpose": "Read a note's content and metadata."},
-        {"name": "create_note_tool", "purpose": "Create a new note (or overwrite an existing one)."},
-        {"name": "update_note_tool", "purpose": "Replace or append to an existing note's content."},
-        {"name": "edit_note_section_tool", "purpose": "Insert/replace/append content at a specific heading."},
-        {"name": "delete_note_tool", "purpose": "Permanently delete a note."},
-        {"name": "search_notes_tool", "purpose": "Search notes by content, path:, tag:, or property:."},
-        {"name": "search_by_date_tool", "purpose": "Find notes created/modified within a date range."},
-        {"name": "search_by_regex_tool", "purpose": "Search notes with a regular expression."},
-        {"name": "search_by_property_tool", "purpose": "Search notes by a frontmatter property value."},
-        {"name": "list_notes_tool", "purpose": "List notes in a directory (or the whole vault)."},
-        {"name": "list_folders_tool", "purpose": "List folders in a directory (or the whole vault)."},
-        {"name": "move_note_tool", "purpose": "Move a note to a new path, updating links to it."},
-        {"name": "rename_note_tool", "purpose": "Rename a note in place, updating links to it."},
-        {"name": "create_folder_tool", "purpose": "Create a folder (with a placeholder file)."},
-        {"name": "move_folder_tool", "purpose": "Move an entire folder and its contents."},
-        {"name": "add_tags_tool", "purpose": "Add tags to a note's frontmatter."},
-        {"name": "update_tags_tool", "purpose": "Replace or merge a note's frontmatter tags."},
-        {"name": "remove_tags_tool", "purpose": "Remove tags from a note's frontmatter."},
-        {"name": "get_note_info_tool", "purpose": "Get a note's metadata/stats without its full content."},
-        {"name": "list_tags_tool", "purpose": "List every tag used in the vault, with counts."},
-        {"name": "batch_update_properties_tool", "purpose": "Bulk-update frontmatter across many notes."},
-        {"name": "get_backlinks_tool", "purpose": "Find every note that links to a given note."},
-        {"name": "get_outgoing_links_tool", "purpose": "List every link a note makes."},
-        {"name": "find_broken_links_tool", "purpose": "Find links pointing at notes that don't exist."},
-        {"name": "find_orphaned_notes_tool", "purpose": "Find notes with no backlinks/tags/links."},
-        {"name": "read_image_tool", "purpose": "Read a standalone image file for analysis."},
-        {"name": "view_note_images_tool", "purpose": "Extract and load images embedded in a note."},
-        {"name": "get_note_template_tool", "purpose": "Show the template rule (if any) for a path."},
-        {"name": "help_tool", "purpose": "This catalog: env vars, path rules, tool index."},
-        {"name": "add_daily_note_tool", "purpose": "Append to (creating if needed) today's daily note."},
+        {"name": name, "purpose": _first_line(tool.description)}
+        for name, tool in sorted(tools_registry.items())
     ]
 
     return {

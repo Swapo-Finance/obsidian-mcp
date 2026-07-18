@@ -183,15 +183,18 @@ class TestConsumersServedFromCacheNotLiveRescan:
     async def test_list_tags_reflects_external_addition_only_after_ttl(self, vault):
         await create_note("A.md", "---\ntags: [alpha]\n---\n# A\n")
         before = await list_tags(include_counts=True)
+        assert before["returned"] == before["total"]  # guard: no silent truncation
         assert {t["name"] for t in before["items"]} == {"alpha"}
 
         (vault.vault_path / "External.md").write_text("---\ntags: [beta]\n---\n# External\n")
 
         still_stale = await list_tags(include_counts=True)
+        assert still_stale["returned"] == still_stale["total"]  # guard: no silent truncation
         assert {t["name"] for t in still_stale["items"]} == {"alpha"}
 
         vault.cache._snapshot_time -= vault.cache_stat_ttl_seconds + 1
         fresh = await list_tags(include_counts=True)
+        assert fresh["returned"] == fresh["total"]  # guard: no silent truncation
         assert {t["name"] for t in fresh["items"]} == {"alpha", "beta"}
 
 

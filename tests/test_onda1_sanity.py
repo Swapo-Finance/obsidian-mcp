@@ -161,11 +161,13 @@ class TestVaultCacheIncrementalUpdate:
     @pytest.mark.asyncio
     async def test_list_tags_reflects_create_note_immediately(self, vault):
         before = await list_tags(include_counts=True)
+        assert before["returned"] == before["total"]  # guard: no silent truncation
         assert {t["name"] for t in before["items"]} == {"alpha"}
 
         await create_note("B.md", "---\ntags: [beta]\n---\n# B\n")
 
         after = await list_tags(include_counts=True)
+        assert after["returned"] == after["total"]  # guard: no silent truncation
         assert {t["name"] for t in after["items"]} == {"alpha", "beta"}
 
     @pytest.mark.asyncio

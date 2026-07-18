@@ -1,7 +1,6 @@
 """Constants for Obsidian MCP server."""
 
 # Obsidian REST API configuration
-OBSIDIAN_BASE_URL = "http://127.0.0.1:27123"
 DEFAULT_TIMEOUT = 10  # seconds - reduced for local API
 DEFAULT_SEARCH_CONTEXT_LENGTH = 100
 DEFAULT_LIST_RECURSIVE = True
@@ -19,12 +18,6 @@ MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 
 # Error messages - Actionable and specific
 ERROR_MESSAGES = {
-    "connection_failed": (
-        "Cannot connect to Obsidian REST API at {url}. "
-        "To fix: 1) Ensure Obsidian is running, 2) Enable the Local REST API plugin in Obsidian settings, "
-        "3) Verify the API is running on port {port}, 4) Check if your firewall is blocking local connections. "
-        "Note: You can override the URL with OBSIDIAN_API_URL environment variable"
-    ),
     "note_not_found": (
         "Note not found at path: '{path}'. "
         "To fix: 1) Check if the path is correct (case-sensitive), 2) Ensure the note exists in your vault, "

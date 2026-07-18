@@ -30,7 +30,9 @@ os.environ["OBSIDIAN_VAULT_PATH"] = tempfile.mkdtemp(prefix="obsidian_server_boo
 
 from fastmcp.exceptions import ToolError  # noqa: E402
 
-from obsidian_mcp.server import add_daily_note_tool, get_note_template_tool, help_tool  # noqa: E402
+from obsidian_mcp.server import add_daily_note_tool, get_note_template_tool, help_tool, list_tags_tool  # noqa: E402
+from obsidian_mcp.tools.note_management import create_note  # noqa: E402
+from obsidian_mcp.tools.vault_meta import _first_line  # noqa: E402
 from obsidian_mcp.utils.filesystem import init_vault  # noqa: E402
 
 
@@ -121,6 +123,51 @@ class TestHelpToolWrapper:
         result = await help_tool.fn()
         assert "vault-relative" in result["path_anchoring"]
 
+    @pytest.mark.asyncio
+    async def test_tools_catalog_matches_live_registry_no_drift(self, vault):
+        # get_help derives `tools` from the live FastMCP registry (server.py's
+        # `mcp`) instead of a hand-maintained list. This is the test whose
+        # whole point is to fail the moment someone registers/renames a tool
+        # without get_help picking it up automatically — if it ever fails,
+        # that drift (not a broken fixture) is the cause.
+        from obsidian_mcp.server import mcp
+
+        result = await help_tool.fn()
+        help_names = {t["name"] for t in result["tools"]}
+        registry_names = set((await mcp.get_tools()).keys())
+
+        assert help_names == registry_names, (
+            "help_tool's tools catalog has drifted from the live FastMCP tool "
+            "registry (obsidian_mcp.server.mcp.get_tools()) - a tool was "
+            "registered or renamed without get_help's derivation picking it "
+            f"up. Symmetric difference: {help_names ^ registry_names}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_each_tool_purpose_is_a_nonempty_single_line(self, vault):
+        result = await help_tool.fn()
+
+        for entry in result["tools"]:
+            assert entry["purpose"], f"{entry['name']} has an empty purpose"
+            assert "\n" not in entry["purpose"], f"{entry['name']} purpose spans multiple lines"
+
+    @pytest.mark.asyncio
+    async def test_log_level_env_var_present_with_info_default(self, vault):
+        result = await help_tool.fn()
+        row = next(r for r in result["env_vars"] if r["name"] == "OBSIDIAN_LOG_LEVEL")
+
+        assert row["default"] == "INFO"
+        assert row["current"] == "INFO"
+
+    @pytest.mark.asyncio
+    async def test_log_level_env_var_current_tracks_env_override(self, vault, monkeypatch):
+        monkeypatch.setenv("OBSIDIAN_LOG_LEVEL", "DEBUG")
+
+        result = await help_tool.fn()
+        row = next(r for r in result["env_vars"] if r["name"] == "OBSIDIAN_LOG_LEVEL")
+
+        assert row["current"] == "DEBUG"
+
 
 class TestAddDailyNoteToolWrapper:
     @pytest.mark.asyncio
@@ -136,6 +183,70 @@ class TestAddDailyNoteToolWrapper:
         # only server.py's wrapper converts it to ToolError.
         with pytest.raises(ToolError):
             await add_daily_note_tool.fn(content="Entry.", date="not-a-date")
+
+
+class TestListTagsToolWrapper:
+    """list_tags_tool (server.py) forwards offset/limit/max_files_per_tag/etc
+    to list_tags positionally: `list_tags(include_counts, sort_by,
+    include_files, offset, limit, max_files_per_tag, ctx)`. All three of
+    offset/limit/max_files_per_tag are plain ints with overlapping valid
+    ranges, so a future reorder of either signature (e.g. inserting a new
+    Annotated param in the middle, or reordering the call site) would
+    silently swap values into the wrong parameter -- no exception, just a
+    wrong page or a wrong truncation cap. test_list_tags_pagination.py
+    deliberately calls the list_tags impl directly and never exercises this
+    wrapper (see that file's module docstring); nothing else in this suite
+    calls list_tags_tool.fn either, so the forwarding itself was untested."""
+
+    @pytest.mark.asyncio
+    async def test_offset_and_limit_reach_the_correct_params(self, vault):
+        # 5 name-sorted tags; offset=1/limit=3 (deliberately different
+        # values) select a distinguishable window -- if offset and limit
+        # were swapped at the call site, this would select tag-03 alone
+        # instead of [tag-01, tag-02, tag-03].
+        for i in range(5):
+            await create_note(f"Note{i}.md", f"---\ntags: [tag-{i:02d}]\n---\n# Note {i}\n")
+
+        result = await list_tags_tool.fn(sort_by="name", offset=1, limit=3)
+
+        assert [t["name"] for t in result["items"]] == ["tag-01", "tag-02", "tag-03"]
+        assert result["offset"] == 1
+        assert result["limit"] == 3
+        assert result["total"] == 5
+
+    @pytest.mark.asyncio
+    async def test_max_files_per_tag_reaches_its_own_param_not_limit_or_offset(self, vault):
+        # offset/limit left at their defaults (0/100); if max_files_per_tag's
+        # value landed in either slot instead, the real max_files_per_tag
+        # would silently fall back to its default (20) and the 4 files
+        # below would come back uncapped instead of capped at 2.
+        for name in ("Popular0.md", "Popular1.md", "Popular2.md", "Popular3.md"):
+            await create_note(name, "---\ntags: [popular]\n---\n# Popular\n")
+
+        result = await list_tags_tool.fn(include_files=True, max_files_per_tag=2)
+
+        popular = result["items"][0]
+        assert popular["name"] == "popular"
+        assert len(popular["files"]) == 2
+        assert popular["files_total"] == 4
+
+    @pytest.mark.asyncio
+    async def test_invalid_sort_by_raises_tool_error(self, vault):
+        # ValueError -> ToolError conversion only exists in server.py's
+        # wrapper (same pattern as TestGetNoteTemplateToolWrapper /
+        # TestAddDailyNoteToolWrapper above) -- calling list_tags() directly
+        # would surface a bare ValueError instead.
+        with pytest.raises(ToolError):
+            await list_tags_tool.fn(sort_by="invalid")
+
+    @pytest.mark.asyncio
+    async def test_file_cost_ceiling_over_limit_raises_tool_error(self, vault):
+        # FIX B's combined-cost guard (limit * max_files_per_tag > 300) is
+        # the actual security fix -- it must be reachable through the real
+        # MCP tool, not just the internal list_tags() function, since the
+        # wrapper is the real attack surface a client calls into.
+        with pytest.raises(ToolError):
+            await list_tags_tool.fn(include_files=True, limit=1000, max_files_per_tag=1000)
 
 
 class TestContextAnnotations:
@@ -254,6 +365,48 @@ class TestContextAnnotations:
             assert ctx_param.default is None, (
                 f"{tool.fn.__name__}: ctx default is {ctx_param.default}, expected None"
             )
+
+
+class TestFirstLineHelper:
+    """_first_line (obsidian_mcp/tools/vault_meta.py): pure docstring-parsing
+    helper backing get_help's per-tool `purpose` field. No vault needed."""
+
+    def test_multiline_docstring_returns_first_nonempty_line_stripped(self):
+        assert _first_line("  First line.  \nSecond line.\nThird.\n") == "First line."
+
+    def test_leading_blank_lines_are_skipped(self):
+        assert _first_line("\n   \n\nActual first line.\nMore.") == "Actual first line."
+
+    def test_none_returns_empty_string(self):
+        assert _first_line(None) == ""
+
+    def test_empty_string_returns_empty_string(self):
+        assert _first_line("") == ""
+
+
+class TestTagToolsDocstringRegressionGuards:
+    """Cheap pins for the P2 docstring corrections - not exhaustive docstring
+    testing, just guarding the specific false claims that were removed so
+    they can't silently come back. FunctionTool wrappers don't proxy
+    __doc__ (it's None on the wrapper itself - confirmed via .fn), so these
+    read through .fn.__doc__, same as TestContextAnnotations above."""
+
+    def test_list_tags_tool_no_longer_claims_synthesized_hierarchy_paths(self):
+        from obsidian_mcp.server import list_tags_tool
+
+        assert 'both "project" and "project/web"' not in list_tags_tool.fn.__doc__
+
+    def test_remove_tags_tool_no_longer_claims_count_of_removed(self):
+        from obsidian_mcp.server import remove_tags_tool
+
+        assert "count of removed" not in remove_tags_tool.fn.__doc__
+
+    def test_add_update_remove_tags_examples_mention_real_response_keys(self):
+        from obsidian_mcp.tools.organization import add_tags, remove_tags, update_tags
+
+        for fn in (add_tags, update_tags, remove_tags):
+            assert "changes" in fn.__doc__, f"{fn.__name__} docstring example missing 'changes'"
+            assert "before" in fn.__doc__, f"{fn.__name__} docstring example missing 'before'"
 
 
 if __name__ == "__main__":
