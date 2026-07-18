@@ -297,14 +297,30 @@ class ObsidianVault:
                         if not isinstance(frontmatter, dict):
                             frontmatter = {}
                     except yaml.YAMLError:
-                        # Fall back to simple parsing for invalid YAML
+                        # Fall back to simple parsing for invalid YAML (e.g. an
+                        # unquoted ':' inside a plain-scalar value like
+                        # `description: ...via Blnk: graceful...` makes
+                        # yaml.safe_load reject the WHOLE block, not just that
+                        # field). Flow-sequence values (`key: [a, b, c]`) are
+                        # still split into a real list here — same bracket
+                        # parsing organization._update_frontmatter_tags already
+                        # uses — so tags/aliases/cssclasses don't collapse into
+                        # a single string containing the literal brackets.
                         frontmatter = {}
                         for line in fm_text.split('\n'):
                             if ':' in line and not line.strip().startswith('#'):
                                 key, value = line.split(':', 1)
                                 key = key.strip()
                                 value = value.strip()
-                                if value:
+                                if not value:
+                                    continue
+                                if value.startswith('[') and value.endswith(']'):
+                                    frontmatter[key] = [
+                                        item.strip().strip('"').strip("'")
+                                        for item in value[1:-1].split(',')
+                                        if item.strip()
+                                    ]
+                                else:
                                     frontmatter[key] = value
                     
                     # Remove frontmatter from content
