@@ -1,0 +1,51 @@
+name: Issue → Project (Triage)
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  add-to-project:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      # `secrets` is not allowed in a step-level `if:`, so surface it as env here
+      # and gate the steps on env instead.
+      PROJECTS_PAT: ${{ secrets.PROJECTS_PAT }}
+    steps:
+      # Third-party actions are SHA-pinned: each one receives PROJECTS_PAT, and a
+      # moved tag would hand that token to whatever the new commit contains.
+      - name: Add issue to project
+        if: env.PROJECTS_PAT != ''
+        uses: actions/add-to-project@244f685bbc3b7adfa8466e08b698b5577571133e # v1.0.2
+        with:
+          project-url: https://github.com/orgs/${{ github.repository_owner }}/projects/1
+          github-token: ${{ secrets.PROJECTS_PAT }}
+
+      - name: Set status to Triage
+        if: env.PROJECTS_PAT != ''
+        uses: github/update-project-action@e5c124df520690eaa72457bcccca9261520f284d # v1
+        with:
+          github_token: ${{ secrets.PROJECTS_PAT }}
+          organization: ${{ github.repository_owner }}
+          project_number: 1
+          item_url: ${{ github.event.issue.html_url }}
+          field: Status
+          value: Triage
+
+      - name: Add needs-triage label
+        if: env.PROJECTS_PAT != ''
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              labels: ['needs-triage']
+            });

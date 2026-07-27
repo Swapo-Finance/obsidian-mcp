@@ -1,0 +1,88 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
+
+      # server.py raises at import time without this, so an unset or missing
+      # path fails collection outright rather than failing a single test.
+      - name: Create test vault
+        run: mkdir -p "${RUNNER_TEMP}/vault"
+
+      - name: Run tests
+        env:
+          OBSIDIAN_VAULT_PATH: ${{ runner.temp }}/vault
+        run: uv run pytest -q
+
+  lint:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Collect changed Python files
+        id: changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          FILES=$(git diff --name-only --diff-filter=d \
+            "origin/${BASE_REF}...HEAD" -- '*.py' | tr '\n' ' ')
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          echo "Changed: ${FILES:-none}"
+
+      # Advisory only: the tree carries pre-existing ruff (~717) and pyright (~133)
+      # findings, so a PR touching a legacy file would fail on debt it did not
+      # introduce. Flip continue-on-error to false once the backlog is cleared.
+      - name: Lint changed Python files
+        if: steps.changed.outputs.files != ''
+        continue-on-error: true
+        env:
+          FILES: ${{ steps.changed.outputs.files }}
+        run: |
+          # shellcheck disable=SC2086
+          uv run ruff check $FILES
+
+      - name: Typecheck changed Python files
+        if: steps.changed.outputs.files != ''
+        continue-on-error: true
+        env:
+          FILES: ${{ steps.changed.outputs.files }}
+        run: |
+          # shellcheck disable=SC2086
+          uv run pyright $FILES

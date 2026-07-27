@@ -37,6 +37,8 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-mock>=3.10.0",
+    "ruff>=0.6.0",
+    "pyright>=1.1.400",
 ]
 
 [project.urls]
@@ -54,3 +56,23 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]
+
+[tool.pyright]
+include = ["obsidian_mcp", "tests"]
+exclude = [
+    "**/__pycache__",
+    ".venv",
+    "build",
+    "dist",
+    "graphify-out",
+]
+# Lowest interpreter the package claims to support, so 3.11+-only syntax is caught.
+pythonVersion = "3.10"
+venvPath = "."
+venv = ".venv"
+# "standard" is pyright's default and the right level for this tree: it catches
+# the Optional-access and argument-type bugs that matter here without demanding
+# full annotation coverage. The tree currently reports ~133 findings, so the
+# gates (Stop hook, CI) check only the files a change actually touches rather
+# than failing on inherited debt. Tighten to "strict" once the backlog clears.
+typeCheckingMode = "standard"

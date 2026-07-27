@@ -5,3 +5,17 @@ __pycache__/
 .venv/
 build/
 dist/
+# aia-harness
+.env
+.env.local
+.env.*.local
+.claude/settings.local.json
+.claude/*.local.*
+.claude/.aia-harness-pending/
+.claude/pm-config.json
+# .worktreeinclude copies settings.local.json / .env into each worktree;
+# the anchored .claude/ rules above do not match those nested copies.
+.claude/worktrees/
+graphify-out/
+graphify-out/cost.json
+graphify-out/cache/

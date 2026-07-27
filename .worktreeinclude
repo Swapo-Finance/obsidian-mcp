@@ -1,0 +1,5 @@
+# Files copied into every new worktree (aia-harness)
+.claude/settings.local.json
+.env
+.env.local
+graphify-out/graph.json

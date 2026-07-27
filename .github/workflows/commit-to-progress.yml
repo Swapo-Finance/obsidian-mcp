@@ -1,0 +1,83 @@
+name: Commit → In Progress
+on:
+  push:
+    branches-ignore:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  set-in-progress:
+    runs-on: ubuntu-latest
+    if: "!startsWith(github.event.head_commit.message, '[skip-pm]')"
+    permissions:
+      contents: read
+      issues: read
+    env:
+      # `secrets` is not allowed in a step-level `if:`, so surface it as env here
+      # and gate the steps on env instead.
+      GH_TOKEN: ${{ secrets.PROJECTS_PAT }}
+    steps:
+      - name: Extract issue numbers from commits
+        id: issues
+        if: env.GH_TOKEN != ''
+        env:
+          COMMITS_JSON: ${{ toJSON(github.event.commits) }}
+        run: |
+          ISSUES=$(printf '%s' "$COMMITS_JSON" | jq -r '.[].message' | grep -oE '#[0-9]+' | tr -d '#' | tr '\n' ',' | sed 's/,$//')
+          echo "issue_numbers=$ISSUES" >> "$GITHUB_OUTPUT"
+
+      - name: Move linked issues to In Progress
+        if: env.GH_TOKEN != '' && steps.issues.outputs.issue_numbers != ''
+        env:
+          REPO: ${{ github.repository }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          ISSUE_NUMBERS: ${{ steps.issues.outputs.issue_numbers }}
+        run: |
+          PROJECT_NUMBER=1
+
+          # item-edit has no --owner flag and needs real GraphQL node IDs, not the
+          # literal strings "Status"/"In Progress" — resolve them via the CLI first.
+          PROJECT_ID=$(gh project list --owner "$REPO_OWNER" --format json \
+            --jq ".projects[] | select(.number == $PROJECT_NUMBER) | .id")
+          if [ -z "$PROJECT_ID" ]; then
+            echo "::error::Could not resolve project #$PROJECT_NUMBER for owner $REPO_OWNER — skipping status update"
+            exit 0
+          fi
+
+          FIELD_ID=$(gh project field-list "$PROJECT_NUMBER" --owner "$REPO_OWNER" --format json \
+            --jq '.fields[] | select(.name == "Status") | .id')
+          OPTION_ID=$(gh project field-list "$PROJECT_NUMBER" --owner "$REPO_OWNER" --format json \
+            --jq '.fields[] | select(.name == "Status") | .options[]? | select(.name == "In Progress") | .id')
+          if [ -z "$FIELD_ID" ] || [ -z "$OPTION_ID" ]; then
+            echo "::error::Could not resolve the Status field or its 'In Progress' option on project #$PROJECT_NUMBER — skipping status update"
+            exit 0
+          fi
+
+          IFS=',' read -ra NUMS <<< "$ISSUE_NUMBERS"
+          for N in "${NUMS[@]}"; do
+            # Check if issue has pm:paused label — skip if so
+            LABELS=$(gh issue view "$N" --repo "$REPO" --json labels --jq '[.labels[].name]')
+            if echo "$LABELS" | grep -q '"pm:paused"'; then
+              echo "Issue #$N has pm:paused — skipping"
+              continue
+            fi
+            echo "Moving issue #$N to In Progress"
+            # --limit is required: it defaults to 30 and this board already has
+            # 248 items, so without it every issue past the first 30 silently
+            # looks "not on the board".
+            ITEM_ID=$(gh project item-list "$PROJECT_NUMBER" --owner "$REPO_OWNER" --limit 1000 --format json \
+              --jq ".items[] | select(.content.number == ${N}) | .id")
+            if [ -z "$ITEM_ID" ]; then
+              echo "Issue #$N is not on the project board — skipping"
+              continue
+            fi
+            if gh project item-edit --id "$ITEM_ID" --field-id "$FIELD_ID" --project-id "$PROJECT_ID" \
+              --single-select-option-id "$OPTION_ID"; then
+              echo "Moved #$N to In Progress"
+            else
+              echo "::warning::Could not update #$N to In Progress"
+            fi
+          done

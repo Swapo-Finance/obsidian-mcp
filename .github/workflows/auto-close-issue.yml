@@ -1,0 +1,98 @@
+name: Auto-close issue on PR merge
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  close-linked-issues:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    permissions:
+      contents: read
+      issues: write
+    env:
+      # `secrets` is not allowed in a step-level `if:`, so surface it as env here
+      # and gate the steps on env instead.
+      GH_TOKEN: ${{ secrets.PROJECTS_PAT }}
+    steps:
+      - name: Extract linked issues
+        id: issues
+        if: env.GH_TOKEN != ''
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          ISSUES=$(printf '%s' "$PR_BODY" | \
+            grep -ioE '(closes|fixes|resolves)\s+#[0-9]+' | \
+            grep -oE '#[0-9]+' | tr -d '#' | tr '\n' ',' | sed 's/,$//')
+          echo "issue_numbers=$ISSUES" >> "$GITHUB_OUTPUT"
+
+      - name: Close issues and move to Done
+        if: env.GH_TOKEN != '' && steps.issues.outputs.issue_numbers != ''
+        env:
+          REPO: ${{ github.repository }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ISSUE_NUMBERS: ${{ steps.issues.outputs.issue_numbers }}
+        run: |
+          PROJECT_NUMBER=1
+
+          # item-edit has no --owner flag and needs real GraphQL node IDs, not the
+          # literal strings "Status"/"Done" — resolve them via the CLI first.
+          # Resolved once, up front: a missing project/field is a config problem
+          # (::error::), a missing "Done" option is expected variance (::warning::).
+          # Either way, closing the issues below must not be blocked by this.
+          PROJECT_ID=$(gh project list --owner "$REPO_OWNER" --format json \
+            --jq ".projects[] | select(.number == $PROJECT_NUMBER) | .id")
+          if [ -z "$PROJECT_ID" ]; then
+            echo "::error::Could not resolve project #$PROJECT_NUMBER for owner $REPO_OWNER — issues will be closed without a status update"
+          fi
+
+          FIELD_ID=""
+          OPTION_ID=""
+          if [ -n "$PROJECT_ID" ]; then
+            FIELD_ID=$(gh project field-list "$PROJECT_NUMBER" --owner "$REPO_OWNER" --format json \
+              --jq '.fields[] | select(.name == "Status") | .id')
+            if [ -z "$FIELD_ID" ]; then
+              echo "::error::Could not resolve the Status field on project #$PROJECT_NUMBER — issues will be closed without a status update"
+            else
+              OPTION_ID=$(gh project field-list "$PROJECT_NUMBER" --owner "$REPO_OWNER" --format json \
+                --jq '.fields[] | select(.name == "Status") | .options[]? | select(.name == "Done") | .id')
+              if [ -z "$OPTION_ID" ]; then
+                echo "::warning::No 'Done' option found on the Status field of project #$PROJECT_NUMBER — issues will be closed without a status update"
+              fi
+            fi
+          fi
+
+          IFS=',' read -ra NUMS <<< "$ISSUE_NUMBERS"
+          for N in "${NUMS[@]}"; do
+            echo "Closing issue #$N"
+            if gh issue close "$N" --repo "$REPO" \
+              --comment "Automatically closed by merge of PR #$PR_NUMBER. ✅"; then
+              echo "Closed #$N"
+            else
+              echo "::warning::Could not close #$N"
+            fi
+
+            if [ -z "$FIELD_ID" ] || [ -z "$OPTION_ID" ]; then
+              continue
+            fi
+
+            # --limit is required: it defaults to 30 and this board already has
+            # 248 items, so without it every issue past the first 30 silently
+            # looks "not on the board".
+            ITEM_ID=$(gh project item-list "$PROJECT_NUMBER" --owner "$REPO_OWNER" --limit 1000 --format json \
+              --jq ".items[] | select(.content.number == ${N}) | .id")
+            if [ -z "$ITEM_ID" ]; then
+              echo "::warning::Issue #$N is not on the project board — skipping status update"
+              continue
+            fi
+            if gh project item-edit --id "$ITEM_ID" --field-id "$FIELD_ID" --project-id "$PROJECT_ID" \
+              --single-select-option-id "$OPTION_ID"; then
+              echo "Moved #$N to Done"
+            else
+              echo "::warning::Could not update #$N to Done"
+            fi
+          done

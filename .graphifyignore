@@ -1,0 +1,61 @@
+# .graphifyignore — gitignore syntax; seeded from project .gitignore + graphify extraction filters.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+.claude/settings.local.json
+.claude/*.local.*
+.claude/.aia-harness-pending/
+.claude/pm-config.json
+graphify-out/
+graphify-out/cost.json
+graphify-out/cache/
+
+node_modules/
+dist/
+build/
+out/
+coverage/
+.next/
+.nuxt/
+.turbo/
+*.min.js
+*.generated.*
+__pycache__/
+.venv/
+venv/
+.mypy_cache/
+
+# graphify extraction filters
+# Skip binary/media files from semantic extraction
+# (AST still processes code files normally)
+
+# Images — rendered separately, not needed for semantic
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.webp
+*.ico
+
+# PDFs — low signal-to-noise in semantic extraction
+*.pdf
+
+# Videos/audio — transcribed but usually verbose; filter at source if needed
+*.mp4
+*.mov
+*.mp3
+*.wav
+*.flac
+
+.claude/
+docs/
+.agents/
+.code-review-graph/
+.superpowers/
+
+*.md
