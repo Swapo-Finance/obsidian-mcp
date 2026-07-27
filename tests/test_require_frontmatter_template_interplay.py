@@ -78,18 +78,35 @@ async def vault_template_without_name_description():
 
 class TestTemplateKeysAlreadyIncludingNameDescription:
     @pytest.mark.asyncio
-    async def test_missing_name_key_entirely_is_a_template_error_not_a_frontmatter_one(
+    async def test_missing_name_key_is_not_an_error_because_it_is_auto_injected(
         self, vault_template_with_name_description
     ):
-        # description present, status present, but the `name` KEY itself is
-        # absent from frontmatter -> this must fail at the template-
-        # conformance layer (missing key), never reach the require_frontmatter
-        # layer at all.
-        with pytest.raises(ValueError, match="Missing frontmatter keys"):
-            await create_note(
-                "01-projects/Bad.md",
-                "---\ndescription: x\nstatus: active\n---\n\n## Objetivo\n",
-            )
+        # description present, status present, `name` KEY absent — exactly what
+        # get_note_template_tool's `instructions` tells the caller to do
+        # ("'name' is auto-injected from the filename — never supply it
+        # yourself"). The template file declaring `name` must NOT turn that
+        # instruction into a rejection: build_template_info strips `name` from
+        # the gate whenever require_frontmatter is on, and
+        # apply_frontmatter_requirements writes it moments later.
+        result = await create_note(
+            "01-projects/Auto.md",
+            "---\ndescription: x\nstatus: active\n---\n\n## Objetivo\n",
+        )
+        assert result["success"] is True
+
+        note = await read_note("01-projects/Auto.md")
+        assert note["details"]["metadata"]["frontmatter"]["name"] == "Auto"
+
+    @pytest.mark.asyncio
+    async def test_name_not_listed_as_required_when_require_frontmatter_on(
+        self, vault_template_with_name_description
+    ):
+        # The LLM-facing lists must not ask for a key the caller is told never
+        # to supply — neither the summary nor the gate's own key list.
+        info = build_template_info(vault_template_with_name_description, "01-projects")
+        assert "name" not in info["required_frontmatter_keys"]
+        assert "name" not in info["template_frontmatter_keys"]
+        assert "auto-injected" in info["instructions"]
 
     @pytest.mark.asyncio
     async def test_all_keys_present_but_empty_description_is_a_require_frontmatter_error(
@@ -185,6 +202,40 @@ class TestRequireFrontmatterOffTemplateStillEnforced:
                 "01-projects/Good.md", "---\nstatus: active\n---\n\n## Objetivo\n"
             )
             assert result["success"] is True
+        finally:
+            os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)
+            os.environ.pop("OBSIDIAN_FOLDER_TEMPLATES", None)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_template_declaring_name_still_requires_it_when_injection_is_off(self):
+        # The `name` exemption exists only because apply_frontmatter_requirements
+        # injects it. With REQUIRE_FRONTMATTER off nothing ever writes `name`, so
+        # a template that declares it must keep requiring the caller to supply it
+        # — and `instructions` must stop promising an injection that won't happen.
+        temp_dir = tempfile.mkdtemp(prefix="obsidian_reqfm_off_name_")
+        try:
+            templates_dir = Path(temp_dir) / "templates"
+            templates_dir.mkdir()
+            (templates_dir / "projeto.md").write_text(
+                "---\nname: \nstatus: \n---\n\n## Objetivo\n"
+            )
+            (Path(temp_dir) / "01-projects").mkdir()
+
+            os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"
+            os.environ["OBSIDIAN_FOLDER_TEMPLATES"] = (
+                '[{"folder":"01-projects","template":"templates/projeto.md"}]'
+            )
+            vault = init_vault(temp_dir)
+
+            info = build_template_info(vault, "01-projects")
+            assert info["required_frontmatter_keys"] == ["name", "status"]
+            assert "auto-injected" not in info["instructions"]
+
+            with pytest.raises(ValueError, match=r"Missing frontmatter keys: \['name'\]"):
+                await create_note(
+                    "01-projects/Bad.md", "---\nstatus: active\n---\n\n## Objetivo\n"
+                )
         finally:
             os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)
             os.environ.pop("OBSIDIAN_FOLDER_TEMPLATES", None)

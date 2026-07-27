@@ -225,9 +225,12 @@ def build_template_info(vault, note_dir: str) -> Dict[str, Any]:
     value-quality error, not a template-conformance one — the two stay
     separate, composable gates (spec section 10.3's "template-aware, sem
     duplicar" bullet), only the LLM-facing summary is unioned so the caller
-    sees the full contract in one pass. "name" is deliberately never added
-    to either list this way: it's always auto-injected from the filename
-    (see `instructions`), never something the caller needs to supply.
+    sees the full contract in one pass.
+
+    "name" runs the opposite way: when vault.require_frontmatter is on it is
+    *stripped* from both lists even if the template file itself declares it,
+    because apply_frontmatter_requirements force-injects it from the filename
+    moments later — see the filter below.
     """
     always_required = ["description"] if vault.require_frontmatter else []
 
@@ -247,8 +250,24 @@ def build_template_info(vault, note_dir: str) -> Dict[str, Any]:
     skeleton = rule.template_path.read_text(encoding="utf-8")
     headings = extract_required_headings(skeleton)
     frontmatter, _ = vault._parse_frontmatter(skeleton)
-    frontmatter_keys = list(frontmatter.keys())
+    # `name` is force-injected from the filename by apply_frontmatter_requirements,
+    # which runs right AFTER check_template_conformance's gate (see
+    # note_management._apply_write_checks) — so demanding the caller supply it
+    # first flatly contradicts `instructions` below, which tells them not to.
+    # Dropped only when that injection is actually going to happen: with
+    # require_frontmatter off nothing ever writes `name`, so a template that
+    # declares it still legitimately requires the caller to provide it.
+    frontmatter_keys = [
+        k for k in frontmatter.keys()
+        if not (vault.require_frontmatter and k == "name")
+    ]
     required_frontmatter_keys = always_required + [k for k in frontmatter_keys if k not in always_required]
+
+    name_clause = (
+        "'name' is auto-injected from the filename — never supply it yourself. "
+        if vault.require_frontmatter
+        else ""
+    )
 
     return {
         "enforced": True,
@@ -261,8 +280,7 @@ def build_template_info(vault, note_dir: str) -> Dict[str, Any]:
         "instructions": (
             f"Notes under '{rule.folder}' must include every required heading below, in the "
             "same relative order (extra headings are allowed anywhere), plus every required "
-            "frontmatter key (values are free). 'name' is auto-injected from the filename — "
-            "never supply it yourself, even if it's listed above. Use the skeleton as your "
+            f"frontmatter key (values are free). {name_clause}Use the skeleton as your "
             "starting point."
         ),
     }
