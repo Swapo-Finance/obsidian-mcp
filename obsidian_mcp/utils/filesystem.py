@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -253,6 +254,43 @@ class ObsidianVault:
 
         return resolved
 
+    @staticmethod
+    def _resolve_normalization_alias(full_path: Path) -> Path:
+        """If full_path doesn't exist but the same filename in the other
+        Unicode normalization form (NFC vs NFD) does, return that existing
+        path instead.
+
+        Filesystems that store raw bytes (Linux ext4, unlike macOS's APFS,
+        which reconciles NFC/NFD transparently) treat a precomposed and a
+        decomposed encoding of the same visible name as two different
+        files. Without this, a note written under one form becomes
+        unreadable/undeletable/silently-duplicable under the other -- the
+        same class of bug already fixed for wikilink resolution (see
+        tools/wikilink_validation.py's _resolve_normalization_fallback_target:
+        "this isn't a style choice, the two strings are the same text").
+
+        Additive lookup only: tries the other normalization form, never
+        rewrites what's on disk or what the caller asked for. Only the
+        final path component is checked -- covers note filenames and a
+        list_notes `directory` argument's own leaf folder, not an accented
+        *intermediate* folder segment nested deeper in the path.
+        # ponytail: leaf-only; extend to per-segment resolution if a
+        # mismatched intermediate folder segment turns out to matter too.
+
+        No-op (returns full_path unchanged) if it already exists, or if
+        neither alternate form exists either -- a genuinely new or
+        genuinely missing path behaves exactly as before.
+        """
+        if full_path.exists():
+            return full_path
+        for form in ("NFC", "NFD"):
+            alias_name = unicodedata.normalize(form, full_path.name)
+            if alias_name != full_path.name:
+                alias_path = full_path.with_name(alias_name)
+                if alias_path.exists():
+                    return alias_path
+        return full_path
+
     def _parse_frontmatter(self, content: str) -> tuple[dict[str, Any], str]:
         """Delegates to frontmatter.parse_frontmatter (kept for existing
         callers, incl. vault_config.py, vault_cache.py, tools/note_management.py,
@@ -285,6 +323,7 @@ class ObsidianVault:
 
         # Use lenient path validation for reading existing files
         full_path = self._get_absolute_path(path)
+        full_path = self._resolve_normalization_alias(full_path)
 
         if not full_path.exists():
             raise FileNotFoundError(f"Note not found: {path}")
@@ -347,6 +386,7 @@ class ObsidianVault:
             path += ".md"
 
         full_path = self._ensure_safe_path(path)
+        full_path = self._resolve_normalization_alias(full_path)
 
         # Check if exists
         if full_path.exists() and not overwrite:
@@ -385,6 +425,7 @@ class ObsidianVault:
             path += ".md"
 
         full_path = self._ensure_safe_path(path)
+        full_path = self._resolve_normalization_alias(full_path)
 
         if not full_path.exists():
             raise FileNotFoundError(f"Note not found: {path}")
@@ -738,6 +779,7 @@ class ObsidianVault:
         if directory:
             # Use lenient validation for reading existing directories
             search_path = self._get_absolute_path(directory)
+            search_path = self._resolve_normalization_alias(search_path)
             if not search_path.exists() or not search_path.is_dir():
                 return []
         else:
