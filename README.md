@@ -133,6 +133,37 @@ This command will:
    Then: Open Windsurf Settings → Advanced Settings → Cascade → Add Server → Refresh
    </details>
 
+   <details>
+   <summary><b>Full example — all fork features enabled</b></summary>
+
+   Same shape in any of the clients above — only the `env` block changes; `command`/`args` stay whatever that client's config already uses.
+
+   ```json
+   {
+     "mcpServers": {
+       "obsidian": {
+         "command": "uvx",
+         "args": ["--refresh", "--from", "git+https://github.com/Swapo-Finance/obsidian-mcp", "obsidian-mcp"],
+         "env": {
+           "OBSIDIAN_VAULT_PATH": "/path/to/your/obsidian/vault",
+           "OBSIDIAN_FOLDER_TEMPLATES": "[{\"folder\":\"01-projects\",\"template\":\"templates/project.md\"},{\"folder\":\"02-areas\",\"template\":\"templates/area.md\"},{\"folder\":\"03-knowledge\",\"template\":\"templates/knowledge.md\"},{\"folder\":\"04-resources\",\"template\":\"templates/resource.md\"},{\"folder\":\"daily\",\"template\":\"templates/daily.md\"}]",
+           "OBSIDIAN_SLUG_STYLE": "kebab",
+           "OBSIDIAN_TAG_STYLE": "kebab",
+           "OBSIDIAN_WIKILINK_POLICY": "strict",
+           "OBSIDIAN_DAILY_DIR": "daily",
+           "OBSIDIAN_REQUIRE_FRONTMATTER": "true",
+           "OBSIDIAN_SEARCH_RESULT_MODE": "auto"
+         }
+       }
+     }
+   }
+   ```
+
+   - `--refresh` makes `uvx` re-pull the git package instead of serving a stale cached build — worth keeping since this fork isn't version-pinned on PyPI, so a plain `uvx --from git+...` can keep running an older commit after you update.
+   - `OBSIDIAN_FOLDER_TEMPLATES` above follows a PARA-style vault (`01-projects`, `02-areas`, `03-knowledge`, `04-resources`, `daily`) — adjust folder names and template paths to match your own vault structure.
+   - Every variable, its default, and its valid values are listed in [Configuration](#configuration) below.
+   </details>
+
 3. **Restart your AI tool** to load the new configuration.
 
 That's it! The server will now be available in your AI tool with access to your Obsidian vault.
@@ -192,6 +223,8 @@ Here are some example prompts to get started:
      }
    }
    ```
+
+   The `env` block accepts any of the fork's `OBSIDIAN_*` variables (templates, write policies, search mode, ...) — see the [full example](#manual-configuration) above or the complete reference in [Configuration](#configuration) below.
 
 ## Project Structure
 
