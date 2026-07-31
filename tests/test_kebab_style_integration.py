@@ -169,9 +169,14 @@ class TestSlugStyleKebabFrontmatterName:
     ):
         make_vault(slug_style="kebab")  # REQUIRE_FRONTMATTER=false via fixture
         content = "---\nname: Café Especial\n---\n\nBody\n"
-        await create_note("Note.md", content)
+        # slug_style=kebab also kebab-slugifies the filename itself (see
+        # TestSlugStyleKebabFilename) -- "Note.md" is written as "note.md".
+        # Read back via the returned path rather than the literal we passed
+        # in: relying on the two matching only works on a case-insensitive
+        # filesystem (e.g. default macOS APFS), and fails on Linux (ext4).
+        result = await create_note("Note.md", content)
 
-        note = await read_note("Note.md")
+        note = await read_note(result["path"])
         assert note["details"]["metadata"]["frontmatter"]["name"] == "cafe-especial"
 
     @pytest.mark.asyncio

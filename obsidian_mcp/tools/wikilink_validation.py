@@ -17,6 +17,7 @@ in tests/ and elsewhere -- never patched by module-qualified name.
 """
 
 import re
+import unicodedata
 from pathlib import Path
 
 from ..utils.vault_config import slugify_kebab
@@ -54,6 +55,28 @@ def _resolve_direct_target(note_ref: str, notes_index: dict[str, str]) -> str | 
     if not resolved_path and lookup_name in notes_index.values():
         resolved_path = lookup_name
     return resolved_path
+
+
+def _resolve_normalization_fallback_target(
+    note_ref: str, notes_index: dict[str, str]
+) -> str | None:
+    """Unicode-normalization-insensitive fallback: note_ref didn't resolve
+    directly, but it may be the very same note name written in a different
+    Unicode normalization form (NFC vs NFD) -- e.g. a wikilink typed with a
+    precomposed "é" (NFC) against a note filename whose "é" is stored
+    decomposed (NFD, as e.g. HFS+ / a Mac-synced vault can produce).
+    notes_index keys carry whatever bytes the filesystem returned, and dict
+    lookup is byte-exact, so two canonically-identical names in different
+    forms otherwise miss each other. Applies unconditionally (unlike the
+    kebab fallback below) -- this isn't a style choice, the two strings are
+    the same text.
+    """
+    target_nfc = unicodedata.normalize("NFC", note_ref)
+    for name, real_path in notes_index.items():
+        stem = name.removesuffix(".md")
+        if unicodedata.normalize("NFC", stem) == target_nfc:
+            return real_path
+    return None
 
 
 def _resolve_kebab_fallback_target(
@@ -105,10 +128,12 @@ async def validate_wikilinks_for_write(vault, content: str) -> tuple[str, list[s
     still written), off is silent.
 
     Returns (possibly-rewritten content, warnings). The content is rewritten
-    only when OBSIDIAN_SLUG_STYLE=kebab and a link target doesn't resolve
-    directly but its kebab-slug matches an existing note — the link is
-    rewritten to point at the real filename (keeping the user's original
-    text as the alias) so Obsidian can still resolve it.
+    whenever a link target doesn't resolve directly but still refers to an
+    existing note either in a different Unicode normalization form (NFC vs
+    NFD -- checked unconditionally) or, when OBSIDIAN_SLUG_STYLE=kebab, via
+    its kebab-slug — the link is rewritten to point at the real filename
+    (keeping the user's original text as the alias) so Obsidian can still
+    resolve it.
     """
     masked = _mask_ineligible_regions(content)
     matches = list(_VALIDATION_WIKI_LINK_RE.finditer(masked))
@@ -150,15 +175,24 @@ async def validate_wikilinks_for_write(vault, content: str) -> tuple[str, list[s
             )
 
         resolved_path = _resolve_direct_target(note_ref, notes_index)
+        used_fallback = False
+
+        if not resolved_path:
+            resolved_path = _resolve_normalization_fallback_target(
+                note_ref, notes_index
+            )
+            used_fallback = resolved_path is not None
 
         if not resolved_path and vault.slug_style == "kebab":
             resolved_path = _resolve_kebab_fallback_target(note_ref, notes_index)
-            if resolved_path:
-                display = alias.strip() if alias else target_part.strip()
-                real_stem = Path(resolved_path).stem
-                replacements.append(
-                    (match.start(), match.end(), f"[[{real_stem}|{display}]]")
-                )
+            used_fallback = resolved_path is not None
+
+        if resolved_path and used_fallback:
+            display = alias.strip() if alias else target_part.strip()
+            real_stem = Path(resolved_path).stem
+            replacements.append(
+                (match.start(), match.end(), f"[[{real_stem}|{display}]]")
+            )
 
         if not resolved_path:
             broken_targets.append(note_ref)

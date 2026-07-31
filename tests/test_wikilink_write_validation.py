@@ -15,6 +15,7 @@ in every test body would only obscure what's being verified.
 import os
 import shutil
 import tempfile
+import unicodedata
 
 import pytest
 
@@ -223,7 +224,12 @@ class TestKebabAwareWikilinkResolution:
         result = await create_note("Note.md", "See [[Cafe Especial]] for details.")
         assert result["success"] is True
 
-        note = await read_note("Note.md")
+        # slug_style=kebab also kebab-slugifies "Note.md" itself to
+        # "note.md" -- read back via the returned path rather than the
+        # literal we passed in (relying on the two matching only works on a
+        # case-insensitive filesystem, e.g. default macOS APFS; it fails on
+        # Linux ext4).
+        note = await read_note(result["path"])
         assert "[[Café Especial|Cafe Especial]]" in note["details"]["content"]
 
     @pytest.mark.asyncio
@@ -242,7 +248,9 @@ class TestKebabAwareWikilinkResolution:
         result = await create_note("Note.md", content)
         assert result["success"] is True
 
-        written = (await read_note("Note.md"))["details"]["content"]
+        # Read back via the returned (kebab-slugified -> "note.md") path;
+        # see test_ascii_target_resolves_to_accented_filename above.
+        written = (await read_note(result["path"]))["details"]["content"]
         assert "[[Café Especial|Cafe Especial]]" in written
         assert "```\n[[Cafe Especial]]\n```" in written
 
@@ -253,6 +261,48 @@ class TestKebabAwareWikilinkResolution:
 
         with pytest.raises(ValueError, match="Broken wikilink target"):
             await create_note("Note.md", "See [[Completely Different]] for details.")
+
+
+class TestNormalizationAwareWikilinkResolution:
+    """Regression: a wikilink target that doesn't byte-for-byte match any
+    note's stem may still be the very same note name in a different
+    Unicode normalization form (NFC vs NFD -- e.g. a precomposed "é" vs
+    "e" + a combining acute accent). Unlike the kebab fallback above, this
+    isn't a style choice gated by OBSIDIAN_SLUG_STYLE: the two strings are
+    canonically the same text, so resolution must not depend on which form
+    happened to be typed vs. which form is stored on disk (e.g. a vault
+    with NFD filenames synced from an old Mac/HFS+ volume, queried by a
+    wikilink typed in NFC). slug_style="as-is" here isolates this fallback
+    from the separate kebab-slug fallback tested above."""
+
+    @pytest.mark.asyncio
+    async def test_nfd_reference_resolves_to_nfc_filename(self, make_vault):
+        vault = make_vault(policy="strict", slug_style="as-is")
+        nfc_name = unicodedata.normalize("NFC", "Café Especial")
+        nfd_name = unicodedata.normalize("NFD", "Café Especial")
+        assert nfc_name != nfd_name  # sanity: genuinely different byte sequences
+
+        (vault.vault_path / f"{nfc_name}.md").write_text(f"# {nfc_name}\n")
+
+        result = await create_note("Note.md", f"See [[{nfd_name}]] for details.")
+        assert result["success"] is True
+
+        note = await read_note(result["path"])
+        assert f"[[{nfc_name}|{nfd_name}]]" in note["details"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_nfc_reference_resolves_to_nfd_filename(self, make_vault):
+        vault = make_vault(policy="strict", slug_style="as-is")
+        nfc_name = unicodedata.normalize("NFC", "Café Especial")
+        nfd_name = unicodedata.normalize("NFD", "Café Especial")
+
+        (vault.vault_path / f"{nfd_name}.md").write_text(f"# {nfd_name}\n")
+
+        result = await create_note("Note.md", f"See [[{nfc_name}]] for details.")
+        assert result["success"] is True
+
+        note = await read_note(result["path"])
+        assert f"[[{nfd_name}|{nfc_name}]]" in note["details"]["content"]
 
 
 class TestValidateWikilinksForWriteDirect:
