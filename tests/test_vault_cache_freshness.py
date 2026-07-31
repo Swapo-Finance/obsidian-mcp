@@ -13,7 +13,6 @@ and is not repeated here.
 import os
 import shutil
 import tempfile
-from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -59,7 +58,9 @@ def _count_scans(monkeypatch):
 
 class TestMcpMutationSkipsRescan:
     @pytest.mark.asyncio
-    async def test_create_note_updates_index_without_full_scan_or_stat_diff(self, vault, monkeypatch):
+    async def test_create_note_updates_index_without_full_scan_or_stat_diff(
+        self, vault, monkeypatch
+    ):
         counts = _count_scans(monkeypatch)
 
         # First access lazily builds the cache — exactly one full scan.
@@ -84,7 +85,9 @@ class TestMcpMutationSkipsRescan:
 
 class TestExternalChangeViaStatDiffAfterTtl:
     @pytest.mark.asyncio
-    async def test_external_file_invisible_within_ttl_then_picked_up_after(self, vault, monkeypatch):
+    async def test_external_file_invisible_within_ttl_then_picked_up_after(
+        self, vault, monkeypatch
+    ):
         counts = _count_scans(monkeypatch)
 
         (vault.vault_path / "A.md").write_text("# A\n")
@@ -148,7 +151,9 @@ class TestCacheStatTtlZeroAlwaysRestats:
         assert counts["stat_diff"] == 2  # one per access after the initial build
 
     @pytest.mark.asyncio
-    async def test_external_change_visible_immediately_with_ttl_zero(self, zero_ttl_vault):
+    async def test_external_change_visible_immediately_with_ttl_zero(
+        self, zero_ttl_vault
+    ):
         await build_vault_notes_index(zero_ttl_vault)  # build cache first
         (zero_ttl_vault.vault_path / "Fresh.md").write_text("# Fresh\n")
 
@@ -186,10 +191,14 @@ class TestConsumersServedFromCacheNotLiveRescan:
         assert before["returned"] == before["total"]  # guard: no silent truncation
         assert {t["name"] for t in before["items"]} == {"alpha"}
 
-        (vault.vault_path / "External.md").write_text("---\ntags: [beta]\n---\n# External\n")
+        (vault.vault_path / "External.md").write_text(
+            "---\ntags: [beta]\n---\n# External\n"
+        )
 
         still_stale = await list_tags(include_counts=True)
-        assert still_stale["returned"] == still_stale["total"]  # guard: no silent truncation
+        assert (
+            still_stale["returned"] == still_stale["total"]
+        )  # guard: no silent truncation
         assert {t["name"] for t in still_stale["items"]} == {"alpha"}
 
         vault.cache._snapshot_time -= vault.cache_stat_ttl_seconds + 1

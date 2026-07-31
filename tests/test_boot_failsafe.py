@@ -12,7 +12,7 @@ import tempfile
 
 import pytest
 
-from obsidian_mcp.utils.filesystem import ObsidianVault, init_vault
+from obsidian_mcp.utils.filesystem import init_vault
 
 
 @pytest.fixture
@@ -38,7 +38,9 @@ INT_CONFIGS = [
 
 class TestChoiceConfigFailSafe:
     @pytest.mark.parametrize("env_name,attr,default", CHOICE_CONFIGS)
-    def test_invalid_enum_value_falls_back_to_default(self, vault_dir, env_name, attr, default):
+    def test_invalid_enum_value_falls_back_to_default(
+        self, vault_dir, env_name, attr, default
+    ):
         import os
 
         os.environ[env_name] = "not-a-real-choice"
@@ -57,7 +59,9 @@ class TestChoiceConfigFailSafe:
         assert getattr(vault, attr) == default
 
     @pytest.mark.parametrize("env_name,attr,default", CHOICE_CONFIGS)
-    def test_empty_string_falls_back_to_default(self, vault_dir, env_name, attr, default):
+    def test_empty_string_falls_back_to_default(
+        self, vault_dir, env_name, attr, default
+    ):
         import os
 
         os.environ[env_name] = ""
@@ -70,7 +74,9 @@ class TestChoiceConfigFailSafe:
 
 class TestIntConfigFailSafe:
     @pytest.mark.parametrize("env_name,attr,default", INT_CONFIGS)
-    def test_non_numeric_value_falls_back_to_default(self, vault_dir, env_name, attr, default):
+    def test_non_numeric_value_falls_back_to_default(
+        self, vault_dir, env_name, attr, default
+    ):
         import os
 
         os.environ[env_name] = "not-a-number"
@@ -81,7 +87,9 @@ class TestIntConfigFailSafe:
             os.environ.pop(env_name, None)
 
     @pytest.mark.parametrize("env_name,attr,default", INT_CONFIGS)
-    def test_whitespace_padded_numeric_value_coerces(self, vault_dir, env_name, attr, default):
+    def test_whitespace_padded_numeric_value_coerces(
+        self, vault_dir, env_name, attr, default
+    ):
         import os
 
         os.environ[env_name] = "  42 "
@@ -92,7 +100,9 @@ class TestIntConfigFailSafe:
             os.environ.pop(env_name, None)
 
     @pytest.mark.parametrize("env_name,attr,default", INT_CONFIGS)
-    def test_blank_value_falls_back_to_default(self, vault_dir, env_name, attr, default):
+    def test_blank_value_falls_back_to_default(
+        self, vault_dir, env_name, attr, default
+    ):
         import os
 
         os.environ[env_name] = "   "
@@ -103,7 +113,9 @@ class TestIntConfigFailSafe:
             os.environ.pop(env_name, None)
 
     @pytest.mark.parametrize("env_name,attr,default", INT_CONFIGS)
-    def test_float_looking_value_falls_back_to_default(self, vault_dir, env_name, attr, default):
+    def test_float_looking_value_falls_back_to_default(
+        self, vault_dir, env_name, attr, default
+    ):
         # int() rejects "12.5" outright (no implicit float truncation) —
         # must fail safe to the default, not crash.
         import os

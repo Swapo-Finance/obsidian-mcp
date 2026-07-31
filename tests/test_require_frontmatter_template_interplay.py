@@ -181,7 +181,9 @@ class TestRequireFrontmatterOffTemplateStillEnforced:
         try:
             templates_dir = Path(temp_dir) / "templates"
             templates_dir.mkdir()
-            (templates_dir / "projeto.md").write_text("---\nstatus: \n---\n\n## Objetivo\n")
+            (templates_dir / "projeto.md").write_text(
+                "---\nstatus: \n---\n\n## Objetivo\n"
+            )
             (Path(temp_dir) / "01-projects").mkdir()
 
             os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"
@@ -208,7 +210,9 @@ class TestRequireFrontmatterOffTemplateStillEnforced:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     @pytest.mark.asyncio
-    async def test_template_declaring_name_still_requires_it_when_injection_is_off(self):
+    async def test_template_declaring_name_still_requires_it_when_injection_is_off(
+        self,
+    ):
         # The `name` exemption exists only because apply_frontmatter_requirements
         # injects it. With REQUIRE_FRONTMATTER off nothing ever writes `name`, so
         # a template that declares it must keep requiring the caller to supply it
@@ -232,7 +236,9 @@ class TestRequireFrontmatterOffTemplateStillEnforced:
             assert info["required_frontmatter_keys"] == ["name", "status"]
             assert "auto-injected" not in info["instructions"]
 
-            with pytest.raises(ValueError, match=r"Missing frontmatter keys: \['name'\]"):
+            with pytest.raises(
+                ValueError, match=r"Missing frontmatter keys: \['name'\]"
+            ):
                 await create_note(
                     "01-projects/Bad.md", "---\nstatus: active\n---\n\n## Objetivo\n"
                 )
@@ -254,7 +260,9 @@ class TestRequiredFrontmatterKeysAlwaysListDescription:
     async def test_template_without_description_still_lists_it(
         self, vault_template_without_name_description
     ):
-        info = build_template_info(vault_template_without_name_description, "01-projects")
+        info = build_template_info(
+            vault_template_without_name_description, "01-projects"
+        )
         assert info["enforced"] is True
         assert "description" in info["required_frontmatter_keys"]
         assert "status" in info["required_frontmatter_keys"]
@@ -286,7 +294,9 @@ class TestRequiredFrontmatterKeysAlwaysListDescription:
         try:
             templates_dir = Path(temp_dir) / "templates"
             templates_dir.mkdir()
-            (templates_dir / "projeto.md").write_text("---\nstatus: \n---\n\n## Objetivo\n")
+            (templates_dir / "projeto.md").write_text(
+                "---\nstatus: \n---\n\n## Objetivo\n"
+            )
             (Path(temp_dir) / "01-projects").mkdir()
 
             os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"

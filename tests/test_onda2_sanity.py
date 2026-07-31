@@ -18,8 +18,8 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from obsidian_mcp.tools.note_management import create_note, read_note, update_note
 from obsidian_mcp.tools.daily_notes import add_daily_note
+from obsidian_mcp.tools.note_management import create_note, read_note, update_note
 from obsidian_mcp.tools.search_discovery import search_notes
 from obsidian_mcp.utils.filesystem import ObsidianVault, init_vault
 from obsidian_mcp.utils.vault_config import derive_note_description, derive_note_name
@@ -47,13 +47,18 @@ class TestDeriveNoteNameDescription:
     needed (spec section 10.2)."""
 
     def test_name_from_frontmatter(self):
-        assert derive_note_name("folder/Foo.md", {"name": "Custom Name"}) == "Custom Name"
+        assert (
+            derive_note_name("folder/Foo.md", {"name": "Custom Name"}) == "Custom Name"
+        )
 
     def test_name_falls_back_to_filename_stem(self):
         assert derive_note_name("folder/Foo.md", {}) == "Foo"
 
     def test_description_from_frontmatter(self):
-        assert derive_note_description({"description": "Explicit"}, "# Heading\nBody") == "Explicit"
+        assert (
+            derive_note_description({"description": "Explicit"}, "# Heading\nBody")
+            == "Explicit"
+        )
 
     def test_description_falls_back_to_first_non_heading_line(self):
         content = "# Heading\n\nFirst real line.\n\nMore.\n"
@@ -81,7 +86,9 @@ class TestVaultCacheNameDescription:
         (Path(temp_dir) / "WithMeta.md").write_text(
             "---\nname: Custom\ndescription: A custom description.\n---\n\n# Body\n"
         )
-        (Path(temp_dir) / "NoFrontmatter.md").write_text("# Title\n\nFirst prose line here.\n")
+        (Path(temp_dir) / "NoFrontmatter.md").write_text(
+            "# Title\n\nFirst prose line here.\n"
+        )
         v = init_vault(temp_dir)
         yield v
         os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)
@@ -111,7 +118,9 @@ class TestRequireFrontmatterDefaultOn:
     @pytest_asyncio.fixture
     async def vault(self):
         temp_dir = tempfile.mkdtemp(prefix="obsidian_onda2_require_")
-        os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)  # exercise the true default (on)
+        os.environ.pop(
+            "OBSIDIAN_REQUIRE_FRONTMATTER", None
+        )  # exercise the true default (on)
         v = init_vault(temp_dir)
         yield v
         shutil.rmtree(temp_dir)
@@ -135,7 +144,9 @@ class TestRequireFrontmatterDefaultOn:
         await create_note("Existing.md", "---\ndescription: Has one.\n---\n\nBody\n")
         # Appending pure prose (no frontmatter at all) must succeed — append
         # is exempt (spec section 10.3's exemption bullet).
-        result = await update_note("Existing.md", "More content, no frontmatter here.", merge_strategy="append")
+        result = await update_note(
+            "Existing.md", "More content, no frontmatter here.", merge_strategy="append"
+        )
         assert result["success"] is True
 
 
@@ -161,7 +172,9 @@ class TestAddDailyNoteWithRequireFrontmatter:
     @pytest_asyncio.fixture
     async def vault(self):
         temp_dir = tempfile.mkdtemp(prefix="obsidian_onda2_daily_")
-        os.environ.pop("OBSIDIAN_REQUIRE_FRONTMATTER", None)  # exercise the true default (on)
+        os.environ.pop(
+            "OBSIDIAN_REQUIRE_FRONTMATTER", None
+        )  # exercise the true default (on)
         v = init_vault(temp_dir)
         yield v
         shutil.rmtree(temp_dir)
@@ -213,7 +226,13 @@ class TestSearchResultMode:
         assert result["count"] > 10
         assert result["query"]["mode"] == "index"
         item = result["results"][0]
-        assert set(item.keys()) == {"path", "name", "description", "score", "match_type"}
+        assert set(item.keys()) == {
+            "path",
+            "name",
+            "description",
+            "score",
+            "match_type",
+        }
 
     @pytest.mark.asyncio
     async def test_explicit_content_mode_overrides_auto(self, vault_many_notes):

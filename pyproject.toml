@@ -42,9 +42,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/natestrong/obsidian-mcp"
-Repository = "https://github.com/natestrong/obsidian-mcp"
-Issues = "https://github.com/natestrong/obsidian-mcp/issues"
+Homepage = "https://github.com/Swapo-Finance/obsidian-mcp"
+Repository = "https://github.com/Swapo-Finance/obsidian-mcp"
+Issues = "https://github.com/Swapo-Finance/obsidian-mcp/issues"
 
 [project.scripts]
 obsidian-mcp = "obsidian_mcp.server:main"
@@ -76,3 +76,98 @@ venv = ".venv"
 # gates (Stop hook, CI) check only the files a change actually touches rather
 # than failing on inherited debt. Tighten to "strict" once the backlog clears.
 typeCheckingMode = "standard"
+
+# No [tool.ruff] `target-version` / `line-length` here on purpose: ruff already
+# infers target-version 3.10 from `requires-python` above, and its default
+# line-length (88) is untouched. Adding either would be a no-op today, and a
+# wrong line-length would make the format-on-edit hook reformat the whole
+# tree on the next edit — not a risk worth taking for a setting that changes
+# nothing. Revisit only if `requires-python` changes or the team wants a
+# non-default line length.
+
+[tool.ruff.lint]
+# This project intentionally runs ruff's full default ruleset (413 rules as
+# of ruff 0.16 — see `.claude/rules/python/coding-standards.md`) rather than
+# curating a `select` list. The rules ignored below are not "code we didn't
+# get to" — each silences a verified, load-bearing design decision that a
+# 6-agent cleanup pass (one per domain) independently confirmed is
+# intentional, with pyright otherwise at 0 errors project-wide. Do not add a
+# rule here without the same bar: a concrete file:line count plus a reason a
+# code fix would change behavior, not just style. New genuine findings get a
+# code fix, not a new entry here.
+ignore = [
+    # Blind `except Exception` — 62 sites, two deliberate patterns plus two
+    # one-off sites of the same shape:
+    # (1) the MCP tool-boundary contract: all ~30 `*_tool` wrappers (now in
+    #     the 8 `obsidian_mcp/mcp_*.py` registration modules — `server.py`
+    #     only re-exports them) end with `except Exception as e: raise
+    #     ToolError(...)`, required by the root CLAUDE.md tool contract so an
+    #     unexpected exception can never escape and kill the client
+    #     connection;
+    # (2) per-item catches in vault-wide bulk scans so one bad note/file
+    #     can't abort the whole operation — find_orphaned_notes.py,
+    #     link_management.py's get_backlinks, note_move.py's and
+    #     note_rename.py's link updates and batch_properties.py's
+    #     batch_update_properties (organization.py itself is now a
+    #     re-export facade with none of these sites), search_discovery.py's
+    #     tag/property scans, filesystem.py's indexer and frontmatter
+    #     parsing, view_note_images.py's per-image loop. tools/CLAUDE.md
+    #     documents this count (25 in tools/) and asks that it not grow;
+    # (3) configure.py's CLI `main()` catches everything at the top level to
+    #     print a clean error and exit(1) instead of a raw traceback — same
+    #     "boundary must not crash uncontrolled" rationale as (1), for a CLI
+    #     entry point instead of an MCP tool;
+    # (4) image_io.py's read_image() resize fallback: if Pillow fails while
+    #     decoding or resizing, it catches everything and returns the
+    #     original (unresized) bytes with an "error" field instead of
+    #     crashing the read — same "boundary must not crash uncontrolled"
+    #     rationale as (1) and (3), for a single graceful-degradation site
+    #     rather than a CLI or MCP boundary.
+    "BLE001",
+    # Naive datetime construction/comparison — 12 sites. This codebase's
+    # datetime convention is naive-local throughout: NoteMetadata.created/
+    # .modified come from datetime.fromtimestamp(stat.st_ctime/st_mtime)
+    # (naive, in filesystem.py), and search_by_date, find_orphaned_notes,
+    # and the property-search date comparisons all compare against those
+    # naive values (verified: they call datetime.now()/.fromtimestamp()/
+    # .strptime() with no tz and compare the results directly). Making a
+    # single call site tz-aware without converting the rest raises
+    # `TypeError: can't compare offset-naive and offset-aware datetimes` at
+    # runtime. add_daily_note also deliberately resolves "today" from the
+    # local clock (not UTC) so the daily note rotates at local midnight.
+    "DTZ001", # datetime() without tzinfo
+    "DTZ005", # datetime.now() without tz
+    "DTZ006", # datetime.fromtimestamp() without tz
+    "DTZ007", # datetime.strptime() without %z
+    # try/except/continue — 2 sites, both in search text/property scans:
+    # _search_by_tag (obsidian_mcp/tools/search_text.py) and
+    # _search_by_property (obsidian_mcp/tools/search_property_engine.py),
+    # paired with the same bulk-scan BLE001 catches above: skip one
+    # unreadable note, keep scanning the rest of the vault.
+    "S112",
+    # `raise ValueError` for a type check — 2 sites, now in
+    # tools/find_orphaned_notes.py's _coerce_exclude_folders and
+    # tools/batch_properties.py's _coerce_tag_list (one shared line for
+    # both the add_tags and remove_tags JSON-string coercion, down from 2
+    # separate call sites before that dedup). Moved out of server.py's
+    # wrapper code during the MCP-wrapper-contract cleanup (tools/CLAUDE.md:
+    # a *_tool wrapper is schema + docstring + exception conversion only,
+    # no parsing logic). Verified: each raise still sits inside a tools/
+    # function whose caller (mcp_links.py's find_orphaned_notes_tool /
+    # mcp_properties.py's batch_update_properties_tool) has an outer
+    # `except ValueError as e: raise ToolError(str(e))` that produces a
+    # clean client-facing message; falling through to the generic
+    # `except Exception as e: raise ToolError(f"Failed to X: {e!s}")`
+    # instead (which is what TRY004's suggested `TypeError` would do,
+    # since it doesn't match the `except ValueError`) would change the
+    # MCP-client-visible error text as a side effect of a style fix.
+    "TRY004",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# All 21 occurrences of EXE001 are in tests/: every test file carries a
+# `#!/usr/bin/env python3` shebang for uniformity, but all are mode 644 and
+# are only ever collected/run by pytest, never invoked directly. Scoped
+# here (rather than a global ignore) because no file outside tests/ has
+# this pattern — verified via `ruff check --select EXE001`.
+"tests/**" = ["EXE001"]

@@ -180,21 +180,27 @@ class TestEmbedsAndCodeAreIgnored:
         assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_broken_link_inside_fenced_code_block_ignored_under_strict(self, make_vault):
+    async def test_broken_link_inside_fenced_code_block_ignored_under_strict(
+        self, make_vault
+    ):
         make_vault(policy="strict")
         content = "Some text.\n\n```\n[[Totally Broken]]\n```\n"
         result = await create_note("Note.md", content)
         assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_broken_link_inside_inline_code_ignored_under_strict(self, make_vault):
+    async def test_broken_link_inside_inline_code_ignored_under_strict(
+        self, make_vault
+    ):
         make_vault(policy="strict")
         content = "Reference the syntax `[[Totally Broken]]` in prose."
         result = await create_note("Note.md", content)
         assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_real_link_outside_code_still_validated_under_strict(self, make_vault):
+    async def test_real_link_outside_code_still_validated_under_strict(
+        self, make_vault
+    ):
         make_vault(policy="strict")
         content = "Inline `[[Ignored]]` but also a real [[Also Broken]] link."
         with pytest.raises(ValueError, match="Also Broken"):
@@ -221,7 +227,9 @@ class TestKebabAwareWikilinkResolution:
         assert "[[Café Especial|Cafe Especial]]" in note["details"]["content"]
 
     @pytest.mark.asyncio
-    async def test_same_text_inside_fenced_code_block_is_not_rewritten(self, make_vault):
+    async def test_same_text_inside_fenced_code_block_is_not_rewritten(
+        self, make_vault
+    ):
         # Regression: the rewrite used to run content.replace(old, new)
         # globally, so a fenced code block that happens to contain the same
         # "[[Cafe Especial]]" text as sample syntax (not a real link) also
@@ -230,10 +238,7 @@ class TestKebabAwareWikilinkResolution:
         vault = make_vault(policy="strict", slug_style="kebab")
         (vault.vault_path / "Café Especial.md").write_text("# Café Especial\n")
 
-        content = (
-            "See [[Cafe Especial]] for details.\n\n"
-            "```\n[[Cafe Especial]]\n```\n"
-        )
+        content = "See [[Cafe Especial]] for details.\n\n```\n[[Cafe Especial]]\n```\n"
         result = await create_note("Note.md", content)
         assert result["success"] is True
 
@@ -255,7 +260,9 @@ class TestValidateWikilinksForWriteDirect:
     no-links-present short-circuit."""
 
     @pytest.mark.asyncio
-    async def test_no_wikilinks_in_content_returns_unchanged_no_warnings(self, make_vault):
+    async def test_no_wikilinks_in_content_returns_unchanged_no_warnings(
+        self, make_vault
+    ):
         vault = make_vault(policy="warn")
         content = "Just plain prose, no links at all."
         new_content, warnings = await validate_wikilinks_for_write(vault, content)

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Tests for edit_note_section functionality."""
 
-import pytest
-import pytest_asyncio
+import shutil
+import tempfile
 import unicodedata
 from pathlib import Path
-import tempfile
-import shutil
+from typing import Literal
+
+import pytest
+import pytest_asyncio
 
 from obsidian_mcp.tools.note_management import edit_note_section
 from obsidian_mcp.utils.filesystem import init_vault
@@ -14,18 +16,18 @@ from obsidian_mcp.utils.filesystem import init_vault
 
 class TestEditNoteSection:
     """Test suite for edit_note_section function."""
-    
+
     @pytest_asyncio.fixture
     async def test_vault(self):
         """Create a test vault with notes."""
         temp_dir = tempfile.mkdtemp(prefix="obsidian_test_")
-        
+
         # Initialize vault
         init_vault(temp_dir)
-        
+
         # Create test notes
         notes_dir = Path(temp_dir)
-        
+
         # Note with multiple sections
         (notes_dir / "structured.md").write_text("""# Main Document
 
@@ -52,21 +54,21 @@ Initial status.
 
 Final thoughts.
 """)
-        
+
         # Note with single section
         (notes_dir / "simple.md").write_text("""# Simple Note
 
 Just a simple note with one section.
 """)
-        
+
         # Empty note
         (notes_dir / "empty.md").write_text("")
-        
+
         yield temp_dir
-        
+
         # Cleanup
         shutil.rmtree(temp_dir)
-    
+
     @pytest.mark.asyncio
     async def test_insert_after_section(self, test_vault):
         """Test inserting content after a section heading."""
@@ -74,19 +76,19 @@ Just a simple note with one section.
             path="structured.md",
             section_identifier="## Tasks",
             content="- [ ] Task 3\n- [ ] Task 4",
-            operation="insert_after"
+            operation="insert_after",
         )
-        
+
         assert result["success"] is True
         assert result["section_found"] is True
         assert result["section_created"] is False
         assert result["edit_type"] == "insert_after"
-        
+
         # Verify content
         content = Path(test_vault, "structured.md").read_text()
         assert "## Tasks\n\n- [ ] Task 3\n- [ ] Task 4" in content
         assert "- [x] Task 1" in content  # Original content preserved
-    
+
     @pytest.mark.asyncio
     async def test_insert_before_section(self, test_vault):
         """Test inserting content before a section heading."""
@@ -94,16 +96,16 @@ Just a simple note with one section.
             path="structured.md",
             section_identifier="## Status Updates",
             content="*Last updated: 2024-01-15*",
-            operation="insert_before"
+            operation="insert_before",
         )
-        
+
         assert result["success"] is True
         assert result["section_found"] is True
-        
+
         # Verify content
         content = Path(test_vault, "structured.md").read_text()
         assert "*Last updated: 2024-01-15*\n\n## Status Updates" in content
-    
+
     @pytest.mark.asyncio
     async def test_replace_section(self, test_vault):
         """Test replacing an entire section."""
@@ -111,18 +113,18 @@ Just a simple note with one section.
             path="structured.md",
             section_identifier="## Introduction",
             content="## Introduction\n\nThis is the new introduction with updated content.",
-            operation="replace"
+            operation="replace",
         )
-        
+
         assert result["success"] is True
         assert result["section_found"] is True
-        
+
         # Verify content
         content = Path(test_vault, "structured.md").read_text()
         assert "This is the new introduction with updated content." in content
         assert "This is the introduction section." not in content  # Old content gone
         assert "## Tasks" in content  # Other sections preserved
-    
+
     @pytest.mark.asyncio
     async def test_append_to_section(self, test_vault):
         """Test appending to the end of a section."""
@@ -130,17 +132,20 @@ Just a simple note with one section.
             path="structured.md",
             section_identifier="### 2024-01-01",
             content="Additional notes for this date.",
-            operation="append_to_section"
+            operation="append_to_section",
         )
-        
+
         assert result["success"] is True
         assert result["section_found"] is True
-        
+
         # Verify content
         content = Path(test_vault, "structured.md").read_text()
         # Content should be added before the next section
-        assert "Initial status.\n\nAdditional notes for this date.\n\n## Conclusion" in content
-    
+        assert (
+            "Initial status.\n\nAdditional notes for this date.\n\n## Conclusion"
+            in content
+        )
+
     @pytest.mark.asyncio
     async def test_create_missing_section(self, test_vault):
         """Test creating a section when it doesn't exist."""
@@ -149,17 +154,17 @@ Just a simple note with one section.
             section_identifier="## New Section",
             content="This is new content.",
             operation="insert_after",
-            create_if_missing=True
+            create_if_missing=True,
         )
-        
+
         assert result["success"] is True
         assert result["section_found"] is False
         assert result["section_created"] is True
-        
+
         # Verify content
         content = Path(test_vault, "simple.md").read_text()
         assert "## New Section\n\nThis is new content." in content
-    
+
     @pytest.mark.asyncio
     async def test_missing_section_error(self, test_vault):
         """Test error when section is missing and create_if_missing is False."""
@@ -169,11 +174,11 @@ Just a simple note with one section.
                 section_identifier="## Nonexistent",
                 content="Content",
                 operation="insert_after",
-                create_if_missing=False
+                create_if_missing=False,
             )
-        
+
         assert "not found" in str(exc_info.value)
-    
+
     @pytest.mark.asyncio
     async def test_invalid_section_identifier(self, test_vault):
         """Test error with invalid section identifier."""
@@ -182,11 +187,11 @@ Just a simple note with one section.
                 path="simple.md",
                 section_identifier="Not a heading",
                 content="Content",
-                operation="insert_after"
+                operation="insert_after",
             )
-        
+
         assert "Invalid section identifier" in str(exc_info.value)
-    
+
     @pytest.mark.asyncio
     async def test_invalid_operation(self, test_vault):
         """Test error with invalid operation."""
@@ -195,11 +200,11 @@ Just a simple note with one section.
                 path="simple.md",
                 section_identifier="# Simple Note",
                 content="Content",
-                operation="invalid_op"
+                operation="invalid_op",
             )
-        
+
         assert "Invalid operation" in str(exc_info.value)
-    
+
     @pytest.mark.asyncio
     async def test_case_insensitive_matching(self, test_vault):
         """Test that section matching is case-insensitive."""
@@ -207,12 +212,12 @@ Just a simple note with one section.
             path="structured.md",
             section_identifier="## TASKS",  # Different case
             content="Case insensitive test",
-            operation="insert_after"
+            operation="insert_after",
         )
-        
+
         assert result["success"] is True
         assert result["section_found"] is True
-    
+
     @pytest.mark.asyncio
     async def test_nested_sections(self, test_vault):
         """Test editing nested sections respects hierarchy."""
@@ -220,17 +225,17 @@ Just a simple note with one section.
             path="structured.md",
             section_identifier="### Subtasks",
             content="- Subtask A\n- Subtask B",
-            operation="replace"
+            operation="replace",
         )
-        
+
         assert result["success"] is True
-        
+
         # Verify content
         content = Path(test_vault, "structured.md").read_text()
         assert "- Subtask A\n- Subtask B" in content
         assert "Some subtasks here." not in content
         assert "## Status Updates" in content  # Next section preserved
-    
+
     @pytest.mark.asyncio
     async def test_empty_note_section_creation(self, test_vault):
         """Test adding a section to an empty note."""
@@ -239,16 +244,16 @@ Just a simple note with one section.
             section_identifier="# New Title",
             content="Content for empty note.",
             operation="insert_after",
-            create_if_missing=True
+            create_if_missing=True,
         )
-        
+
         assert result["success"] is True
         assert result["section_created"] is True
-        
+
         # Verify content
         content = Path(test_vault, "empty.md").read_text()
         assert "# New Title\n\nContent for empty note." in content
-    
+
     @pytest.mark.asyncio
     async def test_section_at_end_of_file(self, test_vault):
         """Test editing the last section in a file."""
@@ -256,11 +261,11 @@ Just a simple note with one section.
             path="structured.md",
             section_identifier="## Conclusion",
             content="More final thoughts.",
-            operation="append_to_section"
+            operation="append_to_section",
         )
-        
+
         assert result["success"] is True
-        
+
         # Verify content
         content = Path(test_vault, "structured.md").read_text()
         assert content.endswith("Final thoughts.\n\nMore final thoughts.\n")
@@ -277,7 +282,7 @@ Just a simple note with one section.
 
         init_vault(temp_dir)
 
-        def write(form: str) -> str:
+        def write(form: Literal["NFC", "NFD", "NFKC", "NFKD"]) -> str:
             raw = (
                 "# Nota\n\n"
                 "## Decisões\n\n"
@@ -303,7 +308,9 @@ Just a simple note with one section.
         shutil.rmtree(temp_dir)
 
     @pytest.mark.asyncio
-    async def test_accented_heading_nfd_file_nfc_identifier(self, accented_vault_factory):
+    async def test_accented_heading_nfd_file_nfc_identifier(
+        self, accented_vault_factory
+    ):
         """File on disk is NFD (decomposed, common on macOS); the
         section_identifier argument is NFC (the typical typed/JSON form).
         Regression test: previously this raised 'Section not found' because
@@ -315,7 +322,7 @@ Just a simple note with one section.
             path="accented.md",
             section_identifier=nfc_identifier,
             content="Marcador NFC contra arquivo NFD.",
-            operation="append_to_section"
+            operation="append_to_section",
         )
 
         assert result["success"] is True
@@ -325,7 +332,9 @@ Just a simple note with one section.
         assert "Marcador NFC contra arquivo NFD." in content
 
     @pytest.mark.asyncio
-    async def test_accented_heading_nfc_file_nfd_identifier(self, accented_vault_factory):
+    async def test_accented_heading_nfc_file_nfd_identifier(
+        self, accented_vault_factory
+    ):
         """Symmetric case: file on disk is NFC, section_identifier argument
         is NFD. Must also match -- the fix normalizes both sides."""
         temp_dir = accented_vault_factory("NFC")
@@ -335,7 +344,7 @@ Just a simple note with one section.
             path="accented.md",
             section_identifier=nfd_identifier,
             content="Marcador NFD contra arquivo NFC.",
-            operation="append_to_section"
+            operation="append_to_section",
         )
 
         assert result["success"] is True
@@ -356,7 +365,7 @@ Just a simple note with one section.
             path="accented.md",
             section_identifier=nfc_identifier,
             content="Marcador NFC contra H3 aninhado em arquivo NFD.",
-            operation="append_to_section"
+            operation="append_to_section",
         )
 
         assert result["success"] is True
@@ -366,7 +375,9 @@ Just a simple note with one section.
         assert "Marcador NFC contra H3 aninhado em arquivo NFD." in content
 
     @pytest.mark.asyncio
-    async def test_unaccented_heading_still_matches_nfd_file(self, accented_vault_factory):
+    async def test_unaccented_heading_still_matches_nfd_file(
+        self, accented_vault_factory
+    ):
         """Control case: a heading with no accented characters must keep
         matching regardless of the file's normalization form -- proves the
         fix is scoped to Unicode composition and doesn't change behavior
@@ -377,7 +388,7 @@ Just a simple note with one section.
             path="accented.md",
             section_identifier="## Problemas",
             content="Marcador de controle sem acento.",
-            operation="append_to_section"
+            operation="append_to_section",
         )
 
         assert result["success"] is True

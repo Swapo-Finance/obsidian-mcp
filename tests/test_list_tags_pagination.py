@@ -42,7 +42,9 @@ from obsidian_mcp.utils.filesystem import init_vault
 # limit, and 14 % 5 = 4 gives a clean partial-last-page case at limit=5
 # (pages of 5, 5, 4) without needing a second fixture just for that.
 TAG_COUNT = 14
-TAG_NAMES = [f"tag-{i:02d}" for i in range(TAG_COUNT)]  # zero-padded -> already name-sorted
+TAG_NAMES = [
+    f"tag-{i:02d}" for i in range(TAG_COUNT)
+]  # zero-padded -> already name-sorted
 
 # 8 files on one tag: comfortably over a small max_files_per_tag (e.g. 3) to
 # exercise truncation, zero-padded so sorted() order is predictable.
@@ -202,7 +204,9 @@ def _tag_names(result: dict) -> list:
 
 class TestListTagsPaginationDefaultPage:
     @pytest.mark.asyncio
-    async def test_small_limit_returns_exactly_limit_items_with_total_unclipped(self, many_tags_vault):
+    async def test_small_limit_returns_exactly_limit_items_with_total_unclipped(
+        self, many_tags_vault
+    ):
         result = await list_tags(offset=0, limit=5)
 
         assert len(result["items"]) == 5
@@ -214,7 +218,9 @@ class TestListTagsPaginationDefaultPage:
 
 class TestListTagsPaginationWalksFullSet:
     @pytest.mark.asyncio
-    async def test_concatenated_pages_equal_full_list_no_overlap_no_gaps(self, many_tags_vault):
+    async def test_concatenated_pages_equal_full_list_no_overlap_no_gaps(
+        self, many_tags_vault
+    ):
         full = await list_tags(sort_by="name", offset=0, limit=1000)
         all_names = [t["name"] for t in full["items"]]
         assert all_names == TAG_NAMES  # sanity: fixture built the vault we think it did
@@ -233,7 +239,9 @@ class TestListTagsPaginationWalksFullSet:
         assert len(walked) == len(set(walked)) == TAG_COUNT
 
     @pytest.mark.asyncio
-    async def test_last_page_is_partial_when_total_not_a_multiple_of_limit(self, many_tags_vault):
+    async def test_last_page_is_partial_when_total_not_a_multiple_of_limit(
+        self, many_tags_vault
+    ):
         last_page = await list_tags(sort_by="name", offset=10, limit=5)
 
         assert last_page["returned"] == 4  # 14 - 10 = 4 < limit
@@ -243,7 +251,9 @@ class TestListTagsPaginationWalksFullSet:
 
 class TestListTagsPaginationOffsetBeyondEnd:
     @pytest.mark.asyncio
-    async def test_offset_past_total_returns_empty_page_with_total_unchanged(self, many_tags_vault):
+    async def test_offset_past_total_returns_empty_page_with_total_unchanged(
+        self, many_tags_vault
+    ):
         result = await list_tags(offset=100, limit=5)
 
         assert result["items"] == []
@@ -253,13 +263,17 @@ class TestListTagsPaginationOffsetBeyondEnd:
 
 class TestListTagsPaginationOrderingBeforeSlicing:
     @pytest.mark.asyncio
-    async def test_slice_is_correct_alphabetical_window_when_sorted_by_name(self, many_tags_vault):
+    async def test_slice_is_correct_alphabetical_window_when_sorted_by_name(
+        self, many_tags_vault
+    ):
         result = await list_tags(sort_by="name", offset=3, limit=4)
 
         assert [t["name"] for t in result["items"]] == TAG_NAMES[3:7]
 
     @pytest.mark.asyncio
-    async def test_slice_is_correct_count_window_when_sorted_by_count(self, count_ordered_vault):
+    async def test_slice_is_correct_count_window_when_sorted_by_count(
+        self, count_ordered_vault
+    ):
         result = await list_tags(sort_by="count", offset=0, limit=2)
 
         assert [t["name"] for t in result["items"]] == ["charlie", "bravo"]
@@ -279,27 +293,37 @@ class TestListTagsPaginationIncludeFiles:
 
 class TestListTagsMaxFilesPerTagCap:
     @pytest.mark.asyncio
-    async def test_files_capped_and_files_total_is_true_count_when_over_cap(self, heavy_tag_vault):
+    async def test_files_capped_and_files_total_is_true_count_when_over_cap(
+        self, heavy_tag_vault
+    ):
         result = await list_tags(include_files=True, max_files_per_tag=3)
 
         popular = next(t for t in result["items"] if t["name"] == "popular")
         assert len(popular["files"]) == 3
         assert popular["files_total"] == 8
-        assert popular["files_total"] > len(popular["files"])  # truncated -> detectable via len < files_total
+        assert popular["files_total"] > len(
+            popular["files"]
+        )  # truncated -> detectable via len < files_total
 
     @pytest.mark.asyncio
-    async def test_untruncated_tag_has_files_length_equal_to_files_total(self, heavy_tag_vault):
+    async def test_untruncated_tag_has_files_length_equal_to_files_total(
+        self, heavy_tag_vault
+    ):
         result = await list_tags(include_files=True, max_files_per_tag=3)
 
         rare = next(t for t in result["items"] if t["name"] == "rare")
         assert len(rare["files"]) == rare["files_total"] == 1
 
     @pytest.mark.asyncio
-    async def test_files_total_present_even_when_include_counts_false(self, heavy_tag_vault):
+    async def test_files_total_present_even_when_include_counts_false(
+        self, heavy_tag_vault
+    ):
         # Explicit contract: files_total is set inside `if include_files:`,
         # independent of include_counts - assert it since `count` itself is
         # absent from the item in this mode.
-        result = await list_tags(include_counts=False, include_files=True, max_files_per_tag=3)
+        result = await list_tags(
+            include_counts=False, include_files=True, max_files_per_tag=3
+        )
 
         popular = next(t for t in result["items"] if t["name"] == "popular")
         assert "count" not in popular
@@ -330,7 +354,9 @@ class TestListTagsMaxFilesPerTagCap:
         assert len(rare["files"]) == rare["files_total"] == 1
 
     @pytest.mark.asyncio
-    async def test_no_files_or_files_total_keys_when_include_files_false(self, heavy_tag_vault):
+    async def test_no_files_or_files_total_keys_when_include_files_false(
+        self, heavy_tag_vault
+    ):
         result = await list_tags(include_files=False, max_files_per_tag=3)
 
         popular = next(t for t in result["items"] if t["name"] == "popular")
@@ -338,9 +364,13 @@ class TestListTagsMaxFilesPerTagCap:
         assert "files_total" not in popular
 
     @pytest.mark.asyncio
-    async def test_cap_applies_per_item_within_a_small_paged_window(self, heavy_tag_vault):
+    async def test_cap_applies_per_item_within_a_small_paged_window(
+        self, heavy_tag_vault
+    ):
         # 2 tags total ("popular", "rare"); name-asc -> popular first.
-        result = await list_tags(include_files=True, max_files_per_tag=2, sort_by="name", offset=0, limit=1)
+        result = await list_tags(
+            include_files=True, max_files_per_tag=2, sort_by="name", offset=0, limit=1
+        )
 
         assert result["returned"] == 1
         popular = result["items"][0]
@@ -357,8 +387,12 @@ class TestListTagsNamesOnlyBranchSortByCount:
     that fix (obsidian_mcp/tools/organization.py)."""
 
     @pytest.mark.asyncio
-    async def test_sort_by_count_orders_by_usage_descending_in_names_only_branch(self, count_ordered_vault):
-        result = await list_tags(include_counts=False, include_files=False, sort_by="count")
+    async def test_sort_by_count_orders_by_usage_descending_in_names_only_branch(
+        self, count_ordered_vault
+    ):
+        result = await list_tags(
+            include_counts=False, include_files=False, sort_by="count"
+        )
 
         assert result["items"] == ["charlie", "bravo", "alpha"], (
             "sort_by='count' was ignored in the include_counts=False/"
@@ -367,17 +401,25 @@ class TestListTagsNamesOnlyBranchSortByCount:
         )
 
     @pytest.mark.asyncio
-    async def test_sort_by_name_is_still_alphabetical_in_names_only_branch(self, count_ordered_vault):
-        result = await list_tags(include_counts=False, include_files=False, sort_by="name")
+    async def test_sort_by_name_is_still_alphabetical_in_names_only_branch(
+        self, count_ordered_vault
+    ):
+        result = await list_tags(
+            include_counts=False, include_files=False, sort_by="name"
+        )
 
         assert result["items"] == ["alpha", "bravo", "charlie"]
 
     @pytest.mark.asyncio
-    async def test_names_only_branch_count_order_matches_full_branch_count_order(self, count_ordered_vault):
+    async def test_names_only_branch_count_order_matches_full_branch_count_order(
+        self, count_ordered_vault
+    ):
         # Pins the two branches to identical sort_by="count" semantics — the
         # thing that was broken (names-only branch drifted from the main
         # include_counts=True branch's tie-break/ordering behavior).
-        names_only = await list_tags(include_counts=False, include_files=False, sort_by="count")
+        names_only = await list_tags(
+            include_counts=False, include_files=False, sort_by="count"
+        )
         full = await list_tags(include_counts=True, sort_by="count")
 
         assert names_only["items"] == [t["name"] for t in full["items"]]
@@ -403,9 +445,15 @@ class TestListTagsSortOrderFlagMatrix:
     """
 
     @pytest.mark.asyncio
-    async def test_sort_by_count_is_true_count_descending_in_every_flag_combination(self, adversarial_order_vault):
+    async def test_sort_by_count_is_true_count_descending_in_every_flag_combination(
+        self, adversarial_order_vault
+    ):
         for include_counts, include_files in FLAG_COMBINATIONS:
-            result = await list_tags(include_counts=include_counts, include_files=include_files, sort_by="count")
+            result = await list_tags(
+                include_counts=include_counts,
+                include_files=include_files,
+                sort_by="count",
+            )
 
             assert _tag_names(result) == ["zulu", "alpha", "mike"], (
                 f"sort_by='count' was ignored for include_counts={include_counts}, "
@@ -415,9 +463,15 @@ class TestListTagsSortOrderFlagMatrix:
             )
 
     @pytest.mark.asyncio
-    async def test_sort_by_name_is_alphabetical_in_every_flag_combination(self, adversarial_order_vault):
+    async def test_sort_by_name_is_alphabetical_in_every_flag_combination(
+        self, adversarial_order_vault
+    ):
         for include_counts, include_files in FLAG_COMBINATIONS:
-            result = await list_tags(include_counts=include_counts, include_files=include_files, sort_by="name")
+            result = await list_tags(
+                include_counts=include_counts,
+                include_files=include_files,
+                sort_by="name",
+            )
 
             assert _tag_names(result) == ["alpha", "mike", "zulu"], (
                 f"sort_by='name' was not alphabetical for include_counts={include_counts}, "
@@ -426,12 +480,18 @@ class TestListTagsSortOrderFlagMatrix:
             )
 
     @pytest.mark.asyncio
-    async def test_count_sort_order_is_identical_across_all_flag_combinations(self, adversarial_order_vault):
+    async def test_count_sort_order_is_identical_across_all_flag_combinations(
+        self, adversarial_order_vault
+    ):
         # Flags gate which optional fields are present on each item; they
         # must never change the ORDER those items come back in.
         orders = {}
         for include_counts, include_files in FLAG_COMBINATIONS:
-            result = await list_tags(include_counts=include_counts, include_files=include_files, sort_by="count")
+            result = await list_tags(
+                include_counts=include_counts,
+                include_files=include_files,
+                sort_by="count",
+            )
             orders[(include_counts, include_files)] = _tag_names(result)
 
         baseline_combo = FLAG_COMBINATIONS[0]
@@ -445,10 +505,16 @@ class TestListTagsSortOrderFlagMatrix:
             )
 
     @pytest.mark.asyncio
-    async def test_name_sort_order_is_identical_across_all_flag_combinations(self, adversarial_order_vault):
+    async def test_name_sort_order_is_identical_across_all_flag_combinations(
+        self, adversarial_order_vault
+    ):
         orders = {}
         for include_counts, include_files in FLAG_COMBINATIONS:
-            result = await list_tags(include_counts=include_counts, include_files=include_files, sort_by="name")
+            result = await list_tags(
+                include_counts=include_counts,
+                include_files=include_files,
+                sort_by="name",
+            )
             orders[(include_counts, include_files)] = _tag_names(result)
 
         baseline_combo = FLAG_COMBINATIONS[0]
@@ -481,7 +547,9 @@ class TestListTagsParameterValidation:
             await list_tags(limit=0)
 
     @pytest.mark.asyncio
-    async def test_max_files_per_tag_below_one_raises_value_error(self, many_tags_vault):
+    async def test_max_files_per_tag_below_one_raises_value_error(
+        self, many_tags_vault
+    ):
         with pytest.raises(ValueError, match="max_files_per_tag"):
             await list_tags(include_files=True, max_files_per_tag=0)
 
@@ -509,7 +577,9 @@ class TestListTagsFileCostCeiling:
     async def test_ceiling_not_enforced_when_include_files_false(self, many_tags_vault):
         # Same over-ceiling product, but include_files=False means no file
         # lists are built at all -- nothing to cap.
-        result = await list_tags(include_files=False, limit=1000, max_files_per_tag=1000)
+        result = await list_tags(
+            include_files=False, limit=1000, max_files_per_tag=1000
+        )
         assert result["total"] == TAG_COUNT
 
 

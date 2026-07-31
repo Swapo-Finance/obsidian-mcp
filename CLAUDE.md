@@ -21,9 +21,9 @@ Architecture: **flat**.
 Always use these exact commands (do not guess):
 
 - **Install:** `uv sync --extra dev`
-- **Lint:** `ruff check <the .py files you changed>`
+- **Lint:** `ruff check obsidian_mcp tests` (must be clean — see Conventions)
 - **Format:** `ruff format`
-- **Typecheck:** `pyright <the .py files you changed>` (config in `[tool.pyright]`, mode `standard`)
+- **Typecheck:** `pyright` (config in `[tool.pyright]`, mode `standard`, scoped to `obsidian_mcp`/`tests`; must be clean — see Conventions)
 - **Test:** `OBSIDIAN_VAULT_PATH=/path/to/vault pytest` (the env var is mandatory — see Conventions)
 - **Build:** `uv build`
 - **Run/Dev:** `obsidian-mcp` (console script → `obsidian_mcp.server:main`)
@@ -96,23 +96,20 @@ NOT self-commit. Untagged or uncertain tasks run serial (no regression). Full pr
 
 MCP server (FastMCP) exposing an Obsidian vault over **direct filesystem access** — no Obsidian REST API, no plugin.
 
-- `obsidian_mcp/server.py` — entrypoint. ~30 `@mcp.tool()` wrappers named `*_tool` that only declare the schema and translate exceptions into `ToolError`; every wrapper delegates to `tools/`. Raises at import time if `OBSIDIAN_VAULT_PATH` is unset, then calls `init_vault()`.
-- `obsidian_mcp/tools/` — one async function per MCP operation, re-exported from `tools/__init__.py`; all reach the vault through `get_vault()`.
-  - `note_management.py` — note CRUD + section editing; runs the write checks (template, frontmatter, slug style, size policy) and serializes writes via `_serialize_note_writes`.
-  - `search_discovery.py` — search by text, date, regex, and frontmatter property; note listing.
-  - `organization.py` — tags, move/rename, folders, batch property updates. Largest module (1728 lines).
-  - `link_management.py` — backlinks, outgoing/broken links, and `validate_wikilinks_for_write` consumed by `note_management`.
-  - `daily_notes.py` · `find_orphaned_notes.py` · `image_management.py` · `view_note_images.py` · `vault_meta.py` — one feature each.
-- `obsidian_mcp/utils/filesystem.py` — `ObsidianVault`, the single I/O choke point (1071 lines), plus the `init_vault()` / `get_vault()` singleton pair. Owns the search index and cache.
-- `obsidian_mcp/utils/persistent_index.py` — SQLite (aiosqlite) search index; used above the `OBSIDIAN_SEARCH_INDEX_THRESHOLD` vault size.
+- `obsidian_mcp/app.py` — the boot sequence (logging, the `OBSIDIAN_VAULT_PATH` check, `init_vault()`) and the shared `mcp = FastMCP(...)` instance plus `main()`. A strict leaf module: imports nothing from `.tools` or `.server`.
+- `obsidian_mcp/mcp_*.py` (8 modules: `mcp_notes`, `mcp_search`, `mcp_discovery`, `mcp_organization`, `mcp_tags`, `mcp_links`, `mcp_properties`, `mcp_media_meta`) — the 30 `@mcp.tool()` wrappers named `*_tool`, grouped to mirror `tools/`. Each only declares the schema and translates exceptions into `ToolError`; every wrapper delegates to `tools/`.
+- `obsidian_mcp/server.py` — imports all 8 `mcp_*` modules (which is what registers the tools) and re-exports the 30 wrappers plus `mcp` and `main` via `__all__`. Still the console-script entry point (`obsidian_mcp.server:main`).
+- `obsidian_mcp/tools/` — one async function per MCP operation, re-exported from `tools/__init__.py`; all reach the vault through `get_vault()`. ~28 modules, each owning one feature area (moves, renames, folders, tag editing/listing, batch properties, search internals, link internals, write policy, and more). `organization.py`, `note_management.py`, `link_management.py`, `search_discovery.py`, and `utils/vault_config.py` are **facades** re-exporting implementations that moved to those sibling modules, so existing imports keep resolving unchanged. `search_discovery.py` and `link_management.py` also keep a few functions (`search_notes`, the public `search_by_property`, `get_backlinks`, `get_outgoing_links`) physically defined in place rather than re-exported: those modules are patched directly by name in several tests (e.g. `obsidian_mcp.tools.search_discovery.get_vault`), and a function's `get_vault()` call resolves against its *defining* module's globals, not wherever the name is re-exported to — moving the definition would turn those patches into silent no-ops. That constraint is also why `search_discovery.py` is one of the three modules kept over the 350-line guideline (556 lines); full rule in `tools/CLAUDE.md`.
+- `obsidian_mcp/utils/filesystem.py` — `ObsidianVault`, the single I/O choke point (823 lines), plus the `init_vault()` / `get_vault()` singleton pair. Owns the search index and cache. Deliberately over the 350-line guideline: it's one class, and splitting it into mixins would cost pyright its view of `self` for a marginal navigation gain.
+- `obsidian_mcp/utils/persistent_index.py` — SQLite (aiosqlite) search index (735 lines); used above the `OBSIDIAN_SEARCH_INDEX_THRESHOLD` vault size. Same 350-line exception as `filesystem.py`, for the same reason — one class (`PersistentSearchIndex`); a composition split was evaluated and rejected as highest-risk with no driver.
 - `obsidian_mcp/utils/vault_cache.py` — stat cache with TTL, feeding `filesystem.py`.
-- `obsidian_mcp/utils/vault_config.py` — reads every `OBSIDIAN_*` env var, normalizes vault-relative paths, parses folder templates. Consumed by `filesystem.py` and `note_management.py`.
+- `obsidian_mcp/utils/vault_config.py` — facade re-exporting path normalization (`vault_paths.py`), folder templates (`templates.py`), slug/tag kebab (`slugs.py`), and frontmatter requirements (`frontmatter_requirements.py`); owns note-size policy directly. Consumed by `filesystem.py` and `note_management.py`.
 - `obsidian_mcp/utils/validation.py` — validators returning `(ok, error)` plus the `validate_params` decorator.
 - `obsidian_mcp/utils/validators.py` — `validate_note_path`, `sanitize_path`, `is_markdown_file`; this is what `tools/` imports via `..utils`. ⚠️ `validate_note_path` is duplicated across both files — check which one you are changing.
 - `obsidian_mcp/models/obsidian.py` — `Note` / `NoteMetadata` pydantic models, the shape every tool returns.
 - `obsidian_mcp/constants.py` — `ERROR_MESSAGES` (actionable, numbered) and `RESPONSE_STRUCTURES` (the response contract each tool category follows).
 - `obsidian_mcp/configure.py` — the `obsidian-mcp-configure` console script.
-- `tests/` — flat, one file per feature, 386 tests, no `conftest.py`.
+- `tests/` — flat, one file per feature plus `conftest.py` (an autouse fixture that restores `os.environ` and resets the `filesystem.vault` singleton between tests), 413 tests.
 
 Domain-specific guidance lives in nested CLAUDE.md files (loaded on demand):
 
@@ -121,14 +118,14 @@ Domain-specific guidance lives in nested CLAUDE.md files (loaded on demand):
 
 ## Conventions
 
-- **`pytest` needs `OBSIDIAN_VAULT_PATH` set to an existing directory** — `server.py` raises at import time, so an unset or missing path breaks the whole collection, not one test. There is no `conftest.py` supplying it.
-- **Every MCP tool is a pair.** `*_tool` in `server.py` carries only the `Annotated[…, Field(description=, pattern=, examples=)]` schema, a "When to use / When NOT to use" docstring, and a try/except that re-raises as `ToolError`. The real work lives in `tools/`. Never put logic in the wrapper.
+- **`pytest` needs `OBSIDIAN_VAULT_PATH` set to an existing directory** — importing `server.py` pulls in `app.py`, which raises at import time if it's unset, so a missing path breaks the whole collection, not one test. `tests/conftest.py` exists now (an autouse fixture resets `os.environ` and the `filesystem.vault` singleton between tests) but deliberately never sets `OBSIDIAN_VAULT_PATH` itself — see its own docstring for why.
+- **Every MCP tool is a pair.** `*_tool` — defined in one of the 8 `mcp_*.py` modules and re-exported from `server.py` — carries only the `Annotated[…, Field(description=, pattern=, examples=)]` schema, a "When to use / When NOT to use" docstring, and a try/except that re-raises as `ToolError`. The real work lives in `tools/`. Never put logic in the wrapper.
 - **Reach the vault only through `get_vault()`.** Never instantiate `ObsidianVault` or touch the filesystem directly from a tool module — `utils/filesystem.py` is the single I/O choke point.
 - **Error text comes from `constants.ERROR_MESSAGES`**, in the actionable numbered form (`"To fix: 1) … 2) …"`). Add a key there instead of inlining a message; response shapes follow `constants.RESPONSE_STRUCTURES`.
 - **Validators return `(ok, error_message)` — they do not raise.** The caller decides. See the duplicate-`validate_note_path` warning in the architecture map before editing either validator file.
-- **New behavior is configured by an `OBSIDIAN_*` env var read in `utils/vault_config.py`** (18 already: slug/tag style, template enforcement, note size policy, wikilink policy, index tuning). Do not scatter `os.getenv` across modules.
+- **New behavior is configured by an `OBSIDIAN_*` env var** (17 already: slug/tag style, template enforcement, note size policy, wikilink policy, index tuning). Read it in `ObsidianVault.__init__` (`utils/filesystem.py`) via the `_read_bool_env`/`_read_choice_env`/`_read_int_env` delegators to `utils/env.py`, or add it to the relevant `vault_config.py`-facade module. Do not scatter `os.getenv` across `tools/`.
 - **Report progress with `await ctx.info(...)`**; `ctx: Optional[Context] = None` is always the last parameter, and every code path must tolerate `ctx` being `None`.
-- **Lint and typecheck gate on the files you changed, not the tree.** The repo carries inherited debt (~717 ruff, ~133 pyright findings), so `ruff check <your files>` and `pyright <your files>` must be clean — you are not expected to clear the backlog. Same rule in the Stop hook and in CI.
+- **Lint and typecheck gate on the whole tree now, not just files you changed.** `ruff check obsidian_mcp tests` and `pyright` must both report zero findings — the inherited debt that used to justify scoping this to your own files is gone. `pyproject.toml`'s `[tool.ruff.lint] ignore` list documents every remaining deliberate exception with a concrete rationale (file:line count + why a code fix would change behavior, not just style); a new finding gets a code fix, not a new ignore entry. Same rule in the Stop hook and in CI.
 
 ## Engineering rules
 <!-- aia-harness:fixed — non-negotiable; do not edit, reorder, or remove during enrichment -->

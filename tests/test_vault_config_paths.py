@@ -25,10 +25,16 @@ class TestNormalizeVaultRelativePathForms:
     """The 3 accepted forms, each with POSIX and Windows separators."""
 
     def test_vault_relative_posix(self, tmp_path):
-        assert normalize_vault_relative_path("01-projects/sub", tmp_path) == "01-projects/sub"
+        assert (
+            normalize_vault_relative_path("01-projects/sub", tmp_path)
+            == "01-projects/sub"
+        )
 
     def test_vault_relative_windows_separator(self, tmp_path):
-        assert normalize_vault_relative_path("01-projects\\sub", tmp_path) == "01-projects/sub"
+        assert (
+            normalize_vault_relative_path("01-projects\\sub", tmp_path)
+            == "01-projects/sub"
+        )
 
     def test_vault_basename_prefixed_posix(self, tmp_path):
         raw = f"{tmp_path.name}/01-projects"
@@ -105,7 +111,10 @@ class TestNormalizeVaultRelativePathForms:
         # Regression guard for the drive-letter regex: a real vault-relative
         # folder has no ":" in 2nd-character position and must stay
         # vault-relative, not get misdetected as a Windows absolute path.
-        assert normalize_vault_relative_path("04-resources/artigos", tmp_path) == "04-resources/artigos"
+        assert (
+            normalize_vault_relative_path("04-resources/artigos", tmp_path)
+            == "04-resources/artigos"
+        )
 
 
 class TestResolvePathMaybeOutsideVault:
@@ -148,7 +157,9 @@ class TestParseFolderTemplatesFailSafe:
         assert parse_folder_templates("{not valid json", tmp_path) == []
 
     def test_non_array_json_yields_empty_list(self, tmp_path):
-        assert parse_folder_templates('{"folder": "x", "template": "y"}', tmp_path) == []
+        assert (
+            parse_folder_templates('{"folder": "x", "template": "y"}', tmp_path) == []
+        )
 
     def test_missing_keys_in_one_item_skips_only_that_item(self, tmp_path):
         (tmp_path / "templates").mkdir()
@@ -183,7 +194,7 @@ class TestParseFolderTemplatesFailSafe:
             (tmp_path / "01-projects").mkdir()
 
             raw_json = (
-                '[{"folder": "01-projects", "template": %r}]' % str(shared_template)
+                f'[{{"folder": "01-projects", "template": {str(shared_template)!r}}}]'
             ).replace("'", '"')
             rules = parse_folder_templates(raw_json, tmp_path)
             assert len(rules) == 1
@@ -244,19 +255,26 @@ class TestLongestPrefixMatch:
         shutil.rmtree(temp_dir)
 
     def test_more_specific_subfolder_rule_wins(self, vault_with_nested_rules):
-        rule = find_template_rule("04-resources/artigos", vault_with_nested_rules.folder_templates)
+        rule = find_template_rule(
+            "04-resources/artigos", vault_with_nested_rules.folder_templates
+        )
+        assert rule is not None
         assert rule.folder == "04-resources/artigos"
 
-    def test_deeper_nested_path_still_matches_specific_rule(self, vault_with_nested_rules):
+    def test_deeper_nested_path_still_matches_specific_rule(
+        self, vault_with_nested_rules
+    ):
         rule = find_template_rule(
             "04-resources/artigos/2024", vault_with_nested_rules.folder_templates
         )
+        assert rule is not None
         assert rule.folder == "04-resources/artigos"
 
     def test_sibling_folder_falls_back_to_parent_rule(self, vault_with_nested_rules):
         rule = find_template_rule(
             "04-resources/videos", vault_with_nested_rules.folder_templates
         )
+        assert rule is not None
         assert rule.folder == "04-resources"
 
     def test_unrelated_folder_has_no_rule(self, vault_with_nested_rules):

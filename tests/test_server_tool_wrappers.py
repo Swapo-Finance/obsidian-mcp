@@ -26,14 +26,21 @@ import pytest
 # ponytail: one throwaway bootstrap dir for the whole test session, never
 # rmtree'd — satisfies server.py's import-time OBSIDIAN_VAULT_PATH check
 # only; every test below repoints the vault to its own tmp dir anyway.
-os.environ["OBSIDIAN_VAULT_PATH"] = tempfile.mkdtemp(prefix="obsidian_server_bootstrap_")
+os.environ["OBSIDIAN_VAULT_PATH"] = tempfile.mkdtemp(
+    prefix="obsidian_server_bootstrap_"
+)
 
-from fastmcp.exceptions import ToolError  # noqa: E402
+from fastmcp.exceptions import ToolError
 
-from obsidian_mcp.server import add_daily_note_tool, get_note_template_tool, help_tool, list_tags_tool  # noqa: E402
-from obsidian_mcp.tools.note_management import create_note  # noqa: E402
-from obsidian_mcp.tools.vault_meta import _first_line  # noqa: E402
-from obsidian_mcp.utils.filesystem import init_vault  # noqa: E402
+from obsidian_mcp.server import (
+    add_daily_note_tool,
+    get_note_template_tool,
+    help_tool,
+    list_tags_tool,
+)
+from obsidian_mcp.tools.note_management import create_note
+from obsidian_mcp.tools.vault_meta import _first_line
+from obsidian_mcp.utils.filesystem import init_vault
 
 
 @pytest.fixture
@@ -49,7 +56,7 @@ def vault():
 
 class TestGetNoteTemplateToolWrapper:
     @pytest.mark.asyncio
-    async def test_enforced_folder_returns_template_info(self, vault, tmp_path):
+    async def test_enforced_folder_returns_template_info(self, vault):
         templates_dir = vault.vault_path / "templates"
         templates_dir.mkdir()
         (templates_dir / "projeto.md").write_text("## Objetivo\n")
@@ -106,7 +113,9 @@ class TestHelpToolWrapper:
         try:
             init_vault(str(vault.vault_path))
             result = await help_tool.fn()
-            row = next(r for r in result["env_vars"] if r["name"] == "OBSIDIAN_WIKILINK_POLICY")
+            row = next(
+                r for r in result["env_vars"] if r["name"] == "OBSIDIAN_WIKILINK_POLICY"
+            )
             assert row["current"] == "strict"
         finally:
             os.environ.pop("OBSIDIAN_WIKILINK_POLICY", None)
@@ -116,7 +125,11 @@ class TestHelpToolWrapper:
         result = await help_tool.fn()
         assert len(result["tools"]) == 30
         tool_names = {t["name"] for t in result["tools"]}
-        assert {"get_note_template_tool", "help_tool", "add_daily_note_tool"} <= tool_names
+        assert {
+            "get_note_template_tool",
+            "help_tool",
+            "add_daily_note_tool",
+        } <= tool_names
 
     @pytest.mark.asyncio
     async def test_path_anchoring_explanation_present(self, vault):
@@ -149,7 +162,9 @@ class TestHelpToolWrapper:
 
         for entry in result["tools"]:
             assert entry["purpose"], f"{entry['name']} has an empty purpose"
-            assert "\n" not in entry["purpose"], f"{entry['name']} purpose spans multiple lines"
+            assert "\n" not in entry["purpose"], (
+                f"{entry['name']} purpose spans multiple lines"
+            )
 
     @pytest.mark.asyncio
     async def test_log_level_env_var_present_with_info_default(self, vault):
@@ -160,7 +175,9 @@ class TestHelpToolWrapper:
         assert row["current"] == "INFO"
 
     @pytest.mark.asyncio
-    async def test_log_level_env_var_current_tracks_env_override(self, vault, monkeypatch):
+    async def test_log_level_env_var_current_tracks_env_override(
+        self, vault, monkeypatch
+    ):
         monkeypatch.setenv("OBSIDIAN_LOG_LEVEL", "DEBUG")
 
         result = await help_tool.fn()
@@ -205,7 +222,9 @@ class TestListTagsToolWrapper:
         # were swapped at the call site, this would select tag-03 alone
         # instead of [tag-01, tag-02, tag-03].
         for i in range(5):
-            await create_note(f"Note{i}.md", f"---\ntags: [tag-{i:02d}]\n---\n# Note {i}\n")
+            await create_note(
+                f"Note{i}.md", f"---\ntags: [tag-{i:02d}]\n---\n# Note {i}\n"
+            )
 
         result = await list_tags_tool.fn(sort_by="name", offset=1, limit=3)
 
@@ -215,7 +234,9 @@ class TestListTagsToolWrapper:
         assert result["total"] == 5
 
     @pytest.mark.asyncio
-    async def test_max_files_per_tag_reaches_its_own_param_not_limit_or_offset(self, vault):
+    async def test_max_files_per_tag_reaches_its_own_param_not_limit_or_offset(
+        self, vault
+    ):
         # offset/limit left at their defaults (0/100); if max_files_per_tag's
         # value landed in either slot instead, the real max_files_per_tag
         # would silently fall back to its default (20) and the 4 files
@@ -246,7 +267,9 @@ class TestListTagsToolWrapper:
         # MCP tool, not just the internal list_tags() function, since the
         # wrapper is the real attack surface a client calls into.
         with pytest.raises(ToolError):
-            await list_tags_tool.fn(include_files=True, limit=1000, max_files_per_tag=1000)
+            await list_tags_tool.fn(
+                include_files=True, limit=1000, max_files_per_tag=1000
+            )
 
 
 class TestContextAnnotations:
@@ -255,41 +278,43 @@ class TestContextAnnotations:
     def test_all_30_tools_have_ctx_optional_context_annotation(self):
         """Import all 30 tool wrappers and verify ctx parameter has Optional[Context] type."""
         import inspect
-        from typing import get_origin, get_args, Union
+        import types
+        from typing import Union, get_args, get_origin
+
         from fastmcp import Context
 
         # Import all 30 tool wrapper functions
         from obsidian_mcp.server import (
-            read_note_tool,
-            create_note_tool,
-            update_note_tool,
-            edit_note_section_tool,
-            delete_note_tool,
-            search_notes_tool,
-            search_by_date_tool,
-            search_by_regex_tool,
-            search_by_property_tool,
-            list_notes_tool,
-            list_folders_tool,
-            move_note_tool,
-            rename_note_tool,
-            create_folder_tool,
-            move_folder_tool,
+            add_daily_note_tool,
             add_tags_tool,
-            update_tags_tool,
-            remove_tags_tool,
-            get_note_info_tool,
-            get_backlinks_tool,
-            get_outgoing_links_tool,
+            batch_update_properties_tool,
+            create_folder_tool,
+            create_note_tool,
+            delete_note_tool,
+            edit_note_section_tool,
             find_broken_links_tool,
             find_orphaned_notes_tool,
-            list_tags_tool,
-            batch_update_properties_tool,
-            read_image_tool,
-            view_note_images_tool,
+            get_backlinks_tool,
+            get_note_info_tool,
             get_note_template_tool,
+            get_outgoing_links_tool,
             help_tool,
-            add_daily_note_tool,
+            list_folders_tool,
+            list_notes_tool,
+            list_tags_tool,
+            move_folder_tool,
+            move_note_tool,
+            read_image_tool,
+            read_note_tool,
+            remove_tags_tool,
+            rename_note_tool,
+            search_by_date_tool,
+            search_by_property_tool,
+            search_by_regex_tool,
+            search_notes_tool,
+            update_note_tool,
+            update_tags_tool,
+            view_note_images_tool,
         )
 
         all_tools = [
@@ -330,7 +355,9 @@ class TestContextAnnotations:
         for tool in all_tools:
             # .fn unwraps the @mcp.tool() decorator
             sig = inspect.signature(tool.fn)
-            assert "ctx" in sig.parameters, f"{tool.fn.__name__} missing 'ctx' parameter"
+            assert "ctx" in sig.parameters, (
+                f"{tool.fn.__name__} missing 'ctx' parameter"
+            )
 
             ctx_param = sig.parameters["ctx"]
             annotation = ctx_param.annotation
@@ -345,8 +372,9 @@ class TestContextAnnotations:
             # Check if it's Optional[Context] or Union[Context, None]
             origin = get_origin(annotation)
 
-            # Union[X, None] is how typing represents Optional[X]
-            if origin is Union:
+            # Union[X, None] is how typing represents Optional[X]; `X | None` (PEP 604)
+            # resolves to types.UnionType instead of typing.Union, so accept both.
+            if origin is Union or origin is types.UnionType:
                 args = get_args(annotation)
                 # Should be (Context, type(None))
                 has_context = Context in args
@@ -394,19 +422,27 @@ class TestTagToolsDocstringRegressionGuards:
     def test_list_tags_tool_no_longer_claims_synthesized_hierarchy_paths(self):
         from obsidian_mcp.server import list_tags_tool
 
-        assert 'both "project" and "project/web"' not in list_tags_tool.fn.__doc__
+        doc = list_tags_tool.fn.__doc__
+        assert doc is not None
+        assert 'both "project" and "project/web"' not in doc
 
     def test_remove_tags_tool_no_longer_claims_count_of_removed(self):
         from obsidian_mcp.server import remove_tags_tool
 
-        assert "count of removed" not in remove_tags_tool.fn.__doc__
+        doc = remove_tags_tool.fn.__doc__
+        assert doc is not None
+        assert "count of removed" not in doc
 
     def test_add_update_remove_tags_examples_mention_real_response_keys(self):
         from obsidian_mcp.tools.organization import add_tags, remove_tags, update_tags
 
         for fn in (add_tags, update_tags, remove_tags):
-            assert "changes" in fn.__doc__, f"{fn.__name__} docstring example missing 'changes'"
-            assert "before" in fn.__doc__, f"{fn.__name__} docstring example missing 'before'"
+            doc = fn.__doc__
+            assert doc is not None, f"{fn.__name__} has no docstring"
+            assert "changes" in doc, (
+                f"{fn.__name__} docstring example missing 'changes'"
+            )
+            assert "before" in doc, f"{fn.__name__} docstring example missing 'before'"
 
 
 if __name__ == "__main__":

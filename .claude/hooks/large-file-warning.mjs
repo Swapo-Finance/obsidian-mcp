@@ -98,12 +98,61 @@ const IGNORED_DIRS = new Set([
 ]);
 
 /**
+ * Exact project-relative paths permanently exempted from the line-count
+ * budget. Each is a specific, reviewed design decision — not a silenced
+ * warning — so every entry MUST carry an inline comment naming the reason.
+ * Deliberately a set of files, not an IGNORED_DIRS entry: these share a
+ * directory with code that should still be checked (e.g. utils/filesystem.py
+ * is exempt, utils/frontmatter.py is not), so a directory-level ignore would
+ * be too broad.
+ */
+const ALLOWLISTED_FILES = new Set([
+  // ObsidianVault is one class and the documented single I/O choke point
+  // (obsidian_mcp/utils/CLAUDE.md). Mixin split evaluated and rejected:
+  // you'd grep for `def read_note` across 4 files and pyright loses its
+  // view of `self`.
+  "obsidian_mcp/utils/filesystem.py",
+  // PersistentSearchIndex, same shape. A composition split into
+  // RegexSearcher/PropertySearcher collaborators sharing one aiosqlite
+  // connection was designed and rejected as the highest-risk item of the
+  // whole refactor, with no driver.
+  "obsidian_mcp/utils/persistent_index.py",
+  // Technical impediment, not preference: search_notes and the public
+  // search_by_property must stay physically defined here — tests do
+  // patch("obsidian_mcp.tools.search_discovery.get_vault") and call the
+  // real function. get_vault() resolves against the globals of its
+  // *defining* module, so moving the definition would make those patches
+  // silent no-ops (tests pass while hitting the real vault). Re-exporting
+  // does not help.
+  "obsidian_mcp/tools/search_discovery.py",
+]);
+
+/**
+ * True when absPath's normalized path ends with one of ALLOWLISTED_FILES,
+ * matched on whole path segments (never a bare substring or basename-only
+ * match) so e.g. allowlisting ".../utils/filesystem.py" can never
+ * accidentally also exempt ".../utils/frontmatter.py" or an unrelated file
+ * that merely shares a basename elsewhere in the tree.
+ * @param {string} absPath
+ * @returns {boolean}
+ */
+function isAllowlisted(absPath) {
+  const normalized = absPath.split(path.sep).join("/");
+  for (const rel of ALLOWLISTED_FILES) {
+    if (normalized === rel || normalized.endsWith("/" + rel)) return true;
+  }
+  return false;
+}
+
+/**
  * Returns true when the file is a real source/business file worth
  * enforcing a line-count budget on.
  * @param {string} absPath
  * @returns {boolean}
  */
 function isSourceFile(absPath) {
+  if (isAllowlisted(absPath)) return false;
+
   const ext = path.extname(absPath).toLowerCase();
   if (!SOURCE_EXTS.has(ext)) return false;
   // TypeScript declaration files are type-only, not logic.
@@ -117,6 +166,9 @@ function isSourceFile(absPath) {
   const base = path.basename(absPath);
   // Test / story / config files — not primary logic.
   if (/\.(test|spec|stories|config|conf)\.[^.]+$/.test(base)) return false;
+  // Python's test convention differs from JS's — test_foo.py / foo_test.py,
+  // never foo.test.py — so it needs its own check alongside the pattern above.
+  if (/^(test_.*|.*_test)\.py$/.test(base)) return false;
   // Pure type / constant / barrel re-export files.
   if (/^(index|types?|interfaces?|constants?|dtos?|enums?|vo)\.[^.]+$/.test(base)) return false;
 

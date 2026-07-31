@@ -51,7 +51,11 @@ def make_vault():
 
     yield _make
 
-    for key in ("OBSIDIAN_REQUIRE_FRONTMATTER", "OBSIDIAN_TAG_STYLE", "OBSIDIAN_SLUG_STYLE"):
+    for key in (
+        "OBSIDIAN_REQUIRE_FRONTMATTER",
+        "OBSIDIAN_TAG_STYLE",
+        "OBSIDIAN_SLUG_STYLE",
+    ):
         os.environ.pop(key, None)
     for d in created_dirs:
         shutil.rmtree(d, ignore_errors=True)
@@ -66,7 +70,9 @@ class TestTagStyleKebabViaTagTools:
         assert result["tags"]["after"] == ["cafe-manha"]
 
     @pytest.mark.asyncio
-    async def test_add_tags_normalizes_hierarchical_tag_segment_by_segment(self, make_vault):
+    async def test_add_tags_normalizes_hierarchical_tag_segment_by_segment(
+        self, make_vault
+    ):
         make_vault(tag_style="kebab")
         await create_note("Note.md", "# Note\n")
         result = await add_tags("Note.md", ["Projeto/Fase 1"])
@@ -115,9 +121,11 @@ class TestTagStyleKebabFrontmatterOnCreate:
         assert note["details"]["metadata"]["tags"] == ["cafe", "projeto/fase-1"]
 
     @pytest.mark.asyncio
-    async def test_non_normalizable_frontmatter_tag_raises_and_writes_nothing(self, make_vault):
+    async def test_non_normalizable_frontmatter_tag_raises_and_writes_nothing(
+        self, make_vault
+    ):
         make_vault(tag_style="kebab")
-        content = "---\ntags: [\"🎉\"]\n---\n\nBody\n"
+        content = '---\ntags: ["🎉"]\n---\n\nBody\n'
         with pytest.raises(ValueError, match="kebab-case"):
             await create_note("Note.md", content)
         with pytest.raises(FileNotFoundError):
@@ -156,7 +164,9 @@ class TestSlugStyleKebabFilename:
 
 class TestSlugStyleKebabFrontmatterName:
     @pytest.mark.asyncio
-    async def test_frontmatter_name_slugified_when_require_frontmatter_off(self, make_vault):
+    async def test_frontmatter_name_slugified_when_require_frontmatter_off(
+        self, make_vault
+    ):
         make_vault(slug_style="kebab")  # REQUIRE_FRONTMATTER=false via fixture
         content = "---\nname: Café Especial\n---\n\nBody\n"
         await create_note("Note.md", content)
@@ -167,7 +177,7 @@ class TestSlugStyleKebabFrontmatterName:
     @pytest.mark.asyncio
     async def test_non_normalizable_frontmatter_name_raises(self, make_vault):
         make_vault(slug_style="kebab")
-        content = "---\nname: \"🎉\"\n---\n\nBody\n"
+        content = '---\nname: "🎉"\n---\n\nBody\n'
         with pytest.raises(ValueError, match="kebab-case"):
             await create_note("Note.md", content)
 

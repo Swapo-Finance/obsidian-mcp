@@ -4,16 +4,17 @@ Both are cheap, read-only, and mostly static — no vault scan involved.
 """
 
 import os
-from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Optional
+from pathlib import PurePosixPath
+from typing import Any
 
 from fastmcp import Context
+
+from ..constants import ERROR_MESSAGES
 from ..utils.filesystem import get_vault
 from ..utils.vault_config import build_template_info, normalize_vault_relative_path
-from ..constants import ERROR_MESSAGES
 
 
-async def get_note_template(path: str, ctx: Optional[Context] = None) -> Dict[str, Any]:
+async def get_note_template(path: str, ctx: Context | None = None) -> dict[str, Any]:
     """
     Describe the template rule (if any) that applies to a note or folder path.
 
@@ -39,12 +40,16 @@ async def get_note_template(path: str, ctx: Optional[Context] = None) -> Dict[st
     if ctx:
         await ctx.info(f"Looking up template rule for: {raw or '(vault root)'}")
 
-    is_note = raw.endswith(".md") or raw.endswith(".markdown")
+    is_note = raw.endswith((".md", ".markdown"))
     folder_part = str(PurePosixPath(raw).parent) if is_note else raw
     if folder_part in (".", "/"):
         folder_part = ""
 
-    normalized = normalize_vault_relative_path(folder_part, vault.vault_path) if folder_part else ""
+    normalized = (
+        normalize_vault_relative_path(folder_part, vault.vault_path)
+        if folder_part
+        else ""
+    )
     if normalized is None:
         raise ValueError(
             ERROR_MESSAGES["path_outside_vault"].format(
@@ -55,7 +60,9 @@ async def get_note_template(path: str, ctx: Optional[Context] = None) -> Dict[st
     return build_template_info(vault, normalized)
 
 
-def _env_row(name: str, type_: str, default: str, current: str, description: str, example: str) -> Dict[str, str]:
+def _env_row(
+    name: str, type_: str, default: str, current: str, description: str, example: str
+) -> dict[str, str]:
     return {
         "name": name,
         "type": type_,
@@ -66,7 +73,7 @@ def _env_row(name: str, type_: str, default: str, current: str, description: str
     }
 
 
-def _first_line(text: Optional[str]) -> str:
+def _first_line(text: str | None) -> str:
     """First non-empty stripped line of a (possibly multi-line) docstring."""
     if not text:
         return ""
@@ -77,7 +84,7 @@ def _first_line(text: Optional[str]) -> str:
     return ""
 
 
-async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
+async def get_help(ctx: Context | None = None) -> dict[str, Any]:
     """
     Static + runtime catalog of every env var (with its current effective
     value), path-anchoring rules, and a one-line-per-tool index — without
@@ -98,80 +105,127 @@ async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
     folder_templates_current = (
         "(none configured)"
         if not vault.folder_templates
-        else str([{"folder": r.folder, "template": r.template_display} for r in vault.folder_templates])
+        else str(
+            [
+                {"folder": r.folder, "template": r.template_display}
+                for r in vault.folder_templates
+            ]
+        )
     )
 
     env_vars = [
         _env_row(
-            "OBSIDIAN_VAULT_PATH", "string (required)", "(none)", str(vault.vault_path),
+            "OBSIDIAN_VAULT_PATH",
+            "string (required)",
+            "(none)",
+            str(vault.vault_path),
             "Absolute (or ~-expanded) path to the Obsidian vault this server exposes.",
             "/Users/you/vaults/brain",
         ),
         _env_row(
-            "OBSIDIAN_LOG_LEVEL", "DEBUG|INFO|WARNING|ERROR|CRITICAL", "INFO", os.getenv("OBSIDIAN_LOG_LEVEL", "INFO"),
+            "OBSIDIAN_LOG_LEVEL",
+            "DEBUG|INFO|WARNING|ERROR|CRITICAL",
+            "INFO",
+            os.getenv("OBSIDIAN_LOG_LEVEL", "INFO"),
             "Python logging level for the server's root logger, set once at process "
             "startup via logging.basicConfig.",
             "DEBUG",
         ),
         _env_row(
-            "OBSIDIAN_INDEX_UPDATE_INTERVAL", "int seconds", "300", str(vault._index_update_interval),
-            "How often the background full-text search index refreshes.", "300",
+            "OBSIDIAN_INDEX_UPDATE_INTERVAL",
+            "int seconds",
+            "300",
+            str(vault._index_update_interval),
+            "How often the background full-text search index refreshes.",
+            "300",
         ),
         _env_row(
-            "OBSIDIAN_INDEX_BATCH_SIZE", "int", "50", str(vault._index_batch_size),
-            "How many files the search index (re)indexes per batch.", "50",
+            "OBSIDIAN_INDEX_BATCH_SIZE",
+            "int",
+            "50",
+            str(vault._index_batch_size),
+            "How many files the search index (re)indexes per batch.",
+            "50",
         ),
         _env_row(
-            "OBSIDIAN_AUTO_INDEX_UPDATE", "bool", "true", str(vault._auto_index_update),
-            "Whether the search index refreshes itself automatically.", "true",
+            "OBSIDIAN_AUTO_INDEX_UPDATE",
+            "bool",
+            "true",
+            str(vault._auto_index_update),
+            "Whether the search index refreshes itself automatically.",
+            "true",
         ),
         _env_row(
-            "OBSIDIAN_FOLDER_TEMPLATES", "JSON array", "(unset = off)", folder_templates_current,
+            "OBSIDIAN_FOLDER_TEMPLATES",
+            "JSON array",
+            "(unset = off)",
+            folder_templates_current,
             "Maps a vault folder to a template file (longest-prefix match). create_note and "
             "update_note(replace) in a mapped folder must conform to the template's headings "
             "and frontmatter keys — see get_note_template_tool.",
             '[{"folder":"01-projects","template":"templates/project.md"}]',
         ),
         _env_row(
-            "OBSIDIAN_WIKILINK_POLICY", "strict|warn|off", "warn", vault.wikilink_policy,
+            "OBSIDIAN_WIKILINK_POLICY",
+            "strict|warn|off",
+            "warn",
+            vault.wikilink_policy,
             "How [[wikilinks]] pointing at a missing note are handled on write. Malformed "
             "links (empty target, unbalanced brackets) always raise, regardless of this.",
             "strict",
         ),
         _env_row(
-            "OBSIDIAN_DAILY_DIR", "string", "daily", vault.daily_dir or "(vault root)",
+            "OBSIDIAN_DAILY_DIR",
+            "string",
+            "daily",
+            vault.daily_dir or "(vault root)",
             "Folder for add_daily_note_tool. Notes inside it are always exempt from the "
             "note-size policy below.",
             "daily",
         ),
         _env_row(
-            "OBSIDIAN_MAX_NOTE_LINES", "int", "500", str(vault.max_note_lines),
+            "OBSIDIAN_MAX_NOTE_LINES",
+            "int",
+            "500",
+            str(vault.max_note_lines),
             "Line-count ceiling per note (create_note / update_note replace). Daily notes are "
             "always exempt.",
             "500",
         ),
         _env_row(
-            "OBSIDIAN_APPEND_HEADROOM_LINES", "int", "100", str(vault.append_headroom_lines),
+            "OBSIDIAN_APPEND_HEADROOM_LINES",
+            "int",
+            "100",
+            str(vault.append_headroom_lines),
             "Extra safety margin for incremental writes (update_note append, "
             "edit_note_section): they're checked against MAX_NOTE_LINES minus this, so an "
             "append gets flagged before a later one would blow past the hard ceiling.",
             "100",
         ),
         _env_row(
-            "OBSIDIAN_NOTE_SIZE_POLICY", "strict|warn|off", "warn", vault.note_size_policy,
+            "OBSIDIAN_NOTE_SIZE_POLICY",
+            "strict|warn|off",
+            "warn",
+            vault.note_size_policy,
             "How a note-size ceiling violation is handled: strict blocks the write, warn "
             "writes anyway and returns a warning, off ignores it entirely.",
             "warn",
         ),
         _env_row(
-            "OBSIDIAN_TAG_STYLE", "kebab|as-is", "as-is", vault.tag_style,
+            "OBSIDIAN_TAG_STYLE",
+            "kebab|as-is",
+            "as-is",
+            vault.tag_style,
             "kebab: add_tags/update_tags/remove_tags (and frontmatter tags in create_note) "
             "are normalized to lower-case, ASCII, hyphen-separated form per '/'-hierarchy "
             "segment; a tag with nothing alphanumeric left (e.g. pure emoji) is rejected.",
             "kebab",
         ),
         _env_row(
-            "OBSIDIAN_SLUG_STYLE", "kebab|as-is", "as-is", vault.slug_style,
+            "OBSIDIAN_SLUG_STYLE",
+            "kebab|as-is",
+            "as-is",
+            vault.slug_style,
             "kebab: create_note's filename and any frontmatter 'name' field are transliterated "
             "to ASCII kebab-case (accents stripped). Also makes wikilink validation resolve a "
             "non-slugified target against an existing note's kebab form, rewriting the link to "
@@ -179,13 +233,19 @@ async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
             "kebab",
         ),
         _env_row(
-            "OBSIDIAN_CACHE_STAT_TTL_SECONDS", "int", "30", str(vault.cache_stat_ttl_seconds),
+            "OBSIDIAN_CACHE_STAT_TTL_SECONDS",
+            "int",
+            "30",
+            str(vault.cache_stat_ttl_seconds),
             "Max age of the in-memory notes/tags/links cache's filesystem snapshot before it "
             "re-stats the vault for changes made outside this MCP server. 0 re-stats every access.",
             "30",
         ),
         _env_row(
-            "OBSIDIAN_REQUIRE_FRONTMATTER", "bool", "true", str(vault.require_frontmatter),
+            "OBSIDIAN_REQUIRE_FRONTMATTER",
+            "bool",
+            "true",
+            str(vault.require_frontmatter),
             "On (the default): create_note and update_note (replace / create_if_not_exists) force "
             "frontmatter 'name' to match the filename, and require a non-empty 'description' "
             "(missing/empty raises a ToolError instead of writing). Exempt: edit_note_section, "
@@ -194,7 +254,10 @@ async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
             "false",
         ),
         _env_row(
-            "OBSIDIAN_SEARCH_RESULT_MODE", "content|index|auto", "auto", vault.search_result_mode,
+            "OBSIDIAN_SEARCH_RESULT_MODE",
+            "content|index|auto",
+            "auto",
+            vault.search_result_mode,
             "Shape of search_notes/search_by_regex/search_by_property/search_by_date results. "
             "content: a text snippet per result (pre-10.4 behavior). index: lightweight "
             "{path, name, description, score, match_type} from the cache, no snippet. auto: index "
@@ -203,7 +266,10 @@ async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
             "index",
         ),
         _env_row(
-            "OBSIDIAN_SEARCH_INDEX_THRESHOLD", "int", "10", str(vault.search_index_threshold),
+            "OBSIDIAN_SEARCH_INDEX_THRESHOLD",
+            "int",
+            "10",
+            str(vault.search_index_threshold),
             "Result-count cutoff used by OBSIDIAN_SEARCH_RESULT_MODE=auto (or a per-call mode='auto') "
             "to decide index vs. content mode.",
             "10",
@@ -211,7 +277,18 @@ async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
     ]
 
     # Derived from the live FastMCP registry (not hardcoded) so this list can
-    # never drift from the actual set of registered tools.
+    # never drift from the actual set of registered tools. Must import from
+    # ..server, NOT ..app: `obsidian_mcp.server` is what imports every
+    # `mcp_*.py` registration module (mcp_discovery, mcp_links, mcp_notes,
+    # etc.), and it's that import that runs the `@mcp.tool()` decorators
+    # populating the registry. `..app` only exposes the bare FastMCP
+    # instance before any tool has registered against it -- repointing this
+    # to `..app` would silently return an empty tool catalog instead of
+    # raising. The guard below exists because the obvious regression test
+    # can't catch this: every test in this repo imports `obsidian_mcp.server`
+    # at module scope before calling help_tool.fn(), so `..app` and
+    # `..server` already resolve to the same populated `mcp` by the time the
+    # assertion runs either way.
     from ..server import mcp  # deferred import: avoids circular import at module load
 
     tools_registry = await mcp.get_tools()
@@ -219,6 +296,18 @@ async def get_help(ctx: Optional[Context] = None) -> Dict[str, Any]:
         {"name": name, "purpose": _first_line(tool.description)}
         for name, tool in sorted(tools_registry.items())
     ]
+    if not tools:
+        # An empty catalog is never legitimate -- either every mcp_*.py
+        # registration module failed to import, or this regressed to
+        # importing `mcp` from ..app instead of ..server (see comment
+        # above). Fail loudly instead of silently handing back an empty list.
+        raise ValueError(
+            "get_help() derived an empty tool catalog from the live FastMCP "
+            "registry (obsidian_mcp.server.mcp.get_tools() returned nothing). "
+            "This function must import `mcp` from ..server, not ..app -- "
+            "..app exposes the bare FastMCP instance before the mcp_*.py "
+            "registration modules have run."
+        )
 
     return {
         "env_vars": env_vars,

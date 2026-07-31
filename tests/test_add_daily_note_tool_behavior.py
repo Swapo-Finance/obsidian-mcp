@@ -140,7 +140,9 @@ class TestDateOverrideRotation:
         assert "Today's entry." not in override_note["details"]["content"]
 
     @pytest.mark.asyncio
-    async def test_repeated_override_date_appends_to_same_backfilled_file(self, make_vault):
+    async def test_repeated_override_date_appends_to_same_backfilled_file(
+        self, make_vault
+    ):
         make_vault()
         first = await add_daily_note("Entry A.", date="2020-01-01")
         second = await add_daily_note("Entry B.", date="2020-01-01")
