@@ -16,7 +16,12 @@ import tempfile
 import pytest
 
 from obsidian_mcp.tools.daily_notes import add_daily_note
-from obsidian_mcp.tools.note_management import create_note, edit_note_section, read_note, update_note
+from obsidian_mcp.tools.note_management import (
+    create_note,
+    edit_note_section,
+    read_note,
+    update_note,
+)
 from obsidian_mcp.utils.filesystem import init_vault
 
 
@@ -128,7 +133,9 @@ class TestIncrementalCeilingIsMaxMinusHeadroom:
             await update_note("Note.md", _lines(14), merge_strategy="append")
 
     @pytest.mark.asyncio
-    async def test_append_over_ceiling_preserves_original_content_under_strict(self, make_vault):
+    async def test_append_over_ceiling_preserves_original_content_under_strict(
+        self, make_vault
+    ):
         make_vault(max_lines=20, headroom=5, policy="strict")
         await create_note("Note.md", "Base")
         with pytest.raises(ValueError):
@@ -137,7 +144,9 @@ class TestIncrementalCeilingIsMaxMinusHeadroom:
         assert note["details"]["content"] == "Base"
 
     @pytest.mark.asyncio
-    async def test_append_over_ceiling_written_with_warning_under_warn(self, make_vault):
+    async def test_append_over_ceiling_written_with_warning_under_warn(
+        self, make_vault
+    ):
         make_vault(max_lines=20, headroom=5, policy="warn")
         await create_note("Note.md", "Base")
         result = await update_note("Note.md", _lines(14), merge_strategy="append")
@@ -166,7 +175,9 @@ class TestDailyNotesAlwaysExemptFromSizePolicy:
         assert "warnings" not in result
 
     @pytest.mark.asyncio
-    async def test_add_daily_note_tool_is_exempt_even_appended_repeatedly(self, make_vault):
+    async def test_add_daily_note_tool_is_exempt_even_appended_repeatedly(
+        self, make_vault
+    ):
         make_vault(max_lines=3, policy="strict", daily_dir="daily")
         first = await add_daily_note(_lines(50))
         assert "warnings" not in first

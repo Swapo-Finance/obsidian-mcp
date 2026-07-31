@@ -16,7 +16,11 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from obsidian_mcp.tools.search_discovery import search_by_date, search_by_property, search_by_regex
+from obsidian_mcp.tools.search_discovery import (
+    search_by_date,
+    search_by_property,
+    search_by_regex,
+)
 from obsidian_mcp.utils.filesystem import init_vault
 
 NOTE_COUNT = 12  # > the default OBSIDIAN_SEARCH_INDEX_THRESHOLD of 10
@@ -50,7 +54,13 @@ class TestSearchByRegexIndexMode:
         assert result["count"] > 10
         assert result["query"]["mode"] == "index"
         item = result["results"][0]
-        assert set(item.keys()) == {"path", "name", "description", "score", "match_type"}
+        assert set(item.keys()) == {
+            "path",
+            "name",
+            "description",
+            "score",
+            "match_type",
+        }
         assert item["match_type"] == "regex"
 
     @pytest.mark.asyncio
@@ -74,7 +84,12 @@ class TestSearchByPropertyIndexMode:
         assert result["query"]["mode"] == "index"
         item = result["results"][0]
         assert set(item.keys()) == {
-            "path", "name", "description", "score", "match_type", "property_value",
+            "path",
+            "name",
+            "description",
+            "score",
+            "match_type",
+            "property_value",
         }
         assert item["property_value"] == "active"
 
@@ -98,8 +113,12 @@ class TestSearchByPropertyIndexMode:
 
 class TestSearchByDateIndexMode:
     @pytest.mark.asyncio
-    async def test_auto_mode_enriches_with_name_description_above_threshold(self, vault_many_notes):
-        result = await search_by_date(date_type="modified", days_ago=7, operator="within")
+    async def test_auto_mode_enriches_with_name_description_above_threshold(
+        self, vault_many_notes
+    ):
+        result = await search_by_date(
+            date_type="modified", days_ago=7, operator="within"
+        )
         assert result["count"] > 10
         assert result["query"]["mode"] == "index"
         item = result["results"][0]

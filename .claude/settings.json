@@ -193,7 +193,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit",
+        "matcher": "Edit|Write|MultiEdit|Bash",
         "hooks": [
           {
             "type": "command",
@@ -202,7 +202,12 @@
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/format-on-edit.mjs"
             ],
             "timeout": 60
-          },
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
           {
             "type": "command",
             "command": "node",

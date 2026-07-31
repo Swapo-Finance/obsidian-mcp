@@ -198,29 +198,35 @@ Here are some example prompts to get started:
 ```
 obsidian-mcp/
 ├── obsidian_mcp/
-│   ├── server.py                   # Entry point: ~30 @mcp.tool() wrapper functions — schema + docstring only, no logic
+│   ├── app.py                       # Boot sequence + shared FastMCP instance (leaf module — imports nothing from tools/ or server.py)
+│   ├── server.py                    # Console-script entry point; imports the mcp_*.py modules below and re-exports all 30 tool wrappers + mcp + main
+│   ├── mcp_notes.py                 # @mcp.tool() wrappers: create/read/update/delete_note, edit_note_section
+│   ├── mcp_search.py                # @mcp.tool() wrappers: search_notes, search_by_date, search_by_regex
+│   ├── mcp_discovery.py             # @mcp.tool() wrappers: list_notes, list_folders, search_by_property, get_note_info
+│   ├── mcp_organization.py          # @mcp.tool() wrappers: move_note, rename_note, create_folder, move_folder
+│   ├── mcp_tags.py                  # @mcp.tool() wrappers: add/update/remove/list_tags
+│   ├── mcp_links.py                 # @mcp.tool() wrappers: backlinks, outgoing links, broken links, find_orphaned_notes
+│   ├── mcp_properties.py            # @mcp.tool() wrapper: batch_update_properties
+│   ├── mcp_media_meta.py            # @mcp.tool() wrappers: add_daily_note, read_image, view_note_images, get_note_template, help
 │   ├── configure.py                 # obsidian-mcp-configure console script (Claude Desktop auto-config)
 │   ├── constants.py                 # ERROR_MESSAGES and RESPONSE_STRUCTURES
-│   ├── tools/
-│   │   ├── note_management.py       # CRUD + section editing; write-validation chain, write serialization
-│   │   ├── search_discovery.py      # search_notes, search_by_date, search_by_regex, search_by_property, list_notes, list_folders
-│   │   ├── organization.py          # tags, move/rename, folders, batch property updates
-│   │   ├── link_management.py       # backlinks, outgoing links, broken links, wikilink write validation
-│   │   ├── daily_notes.py           # add_daily_note
-│   │   ├── find_orphaned_notes.py   # find_orphaned_notes
-│   │   ├── image_management.py      # read_image
-│   │   ├── view_note_images.py      # view_note_images
-│   │   └── vault_meta.py            # get_note_template, help
+│   ├── tools/                       # ~28 modules, one feature area each — the logic behind every *_tool wrapper above
+│   │   ├── note_management.py       # create_note/update_note/delete_note + the write-policy chain (re-exported from write_policy.py)
+│   │   ├── search_discovery.py      # search_notes, search_by_property, list_notes, list_folders (facade for search_by_date/regex + internals)
+│   │   ├── organization.py          # facade — tags, move/rename, folders, batch property updates now live in their own modules
+│   │   ├── link_management.py       # get_backlinks, get_outgoing_links (facade for broken-link/wikilink-validation internals)
+│   │   └── ...                      # note_move, note_rename, folders, tag_editing, batch_properties, search_regex, wikilink_validation, write_policy, and more
 │   ├── models/
 │   │   └── obsidian.py              # Note, NoteMetadata pydantic models
-│   └── utils/
-│       ├── filesystem.py            # ObsidianVault — single I/O choke point, env var resolution
-│       ├── persistent_index.py      # SQLite (aiosqlite) search index
+│   └── utils/                       # ~16 modules — vault I/O, path resolution, config
+│       ├── filesystem.py            # ObsidianVault — single I/O choke point, owns the search index and cache
+│       ├── persistent_index.py      # SQLite (aiosqlite) search index; regex matches run with a per-file worker-process timeout
 │       ├── vault_cache.py           # stat cache with TTL
-│       ├── vault_config.py          # folder-template parsing, path normalization helpers
+│       ├── vault_config.py          # facade — folder templates, path normalization, slug/tag kebab, frontmatter requirements now live in their own modules
+│       ├── env.py                   # pure OBSIDIAN_* env-var readers
 │       ├── validation.py            # validators + validate_params decorator
 │       └── validators.py            # validate_note_path, sanitize_path, is_markdown_file
-├── tests/                           # 30 files, flat, one per feature, ~365 tests total
+├── tests/                           # 34 files + conftest.py, flat, one per feature, 413 tests total
 ├── pyproject.toml                   # dependencies, [project.scripts] entry points, ruff/pyright config
 ├── CLAUDE.md                        # Instructions for Claude Code
 └── README.md
@@ -777,7 +783,7 @@ Get metadata and statistics about a note without retrieving its full content.
 ### Image Management
 
 #### `read_image`
-View an image from your vault. Images are automatically resized to a maximum width of 800px for optimal display in Claude Desktop.
+View an image from your vault. Images are automatically resized to a maximum width of 1600px for optimal display in Claude Desktop.
 
 **Parameters:**
 - `path`: Path to the image file (e.g., "Attachments/screenshot.png")
@@ -1092,7 +1098,7 @@ Writes are serialized through a single lock, so two overlapping edits (e.g. two 
 OBSIDIAN_VAULT_PATH=/tmp/some-existing-dir pytest
 ```
 
-Tests create temporary vaults for isolation and don't require a running Obsidian instance. The suite is 30 files, flat (no subdirectories, no `conftest.py`), one file per feature area, ~365 test functions total.
+Tests create temporary vaults for isolation and don't require a running Obsidian instance. The suite is 34 files, flat (no subdirectories), one file per feature area, 413 test functions total, plus a `conftest.py` holding one autouse fixture that resets environment variables and the vault singleton between tests.
 
 **CI:** GitHub Actions runs the suite across Python 3.10/3.11/3.12 via `uv sync --extra dev` + `uv run pytest -q`, plus an advisory (non-blocking) `ruff`/`pyright` pass scoped to files changed in the PR.
 
@@ -1227,7 +1233,7 @@ Use 'created' to find notes by creation date, 'modified' for last edit date
 ### Adding New Tools
 1. Implement the function in the appropriate module under `obsidian_mcp/tools/` (or a new module for a distinct feature area)
 2. Export it from `obsidian_mcp/tools/__init__.py`
-3. Add a thin `*_tool` wrapper in `obsidian_mcp/server.py` decorated with `@mcp.tool()` — the wrapper only declares the parameter schema (`Annotated[..., Field(...)]`) and docstring, and delegates to the real implementation; no logic belongs in the wrapper
+3. Add a thin `*_tool` wrapper decorated with `@mcp.tool()` in the matching `mcp_*.py` registration module (`mcp_notes.py`, `mcp_search.py`, `mcp_discovery.py`, `mcp_organization.py`, `mcp_tags.py`, `mcp_links.py`, `mcp_properties.py`, or `mcp_media_meta.py`, grouped to mirror `tools/`) — the wrapper only declares the parameter schema (`Annotated[..., Field(...)]`) and docstring, and delegates to the real implementation; no logic belongs in the wrapper. Add its name to `obsidian_mcp/server.py`'s `__all__` so it's re-exported.
 4. Add tests under `tests/` (one file per feature, matching the existing convention)
 
 ## Changelog
@@ -1238,6 +1244,19 @@ Use 'created' to find notes by creation date, 'modified' for last edit date
 - 🛡️ **Configurable write-safety policies** - Frontmatter requirement, note-size limits, wikilink validation, and tag/slug kebab-normalization, each independently configurable
 - 🔎 **Config introspection** - New `help` tool reporting every `OBSIDIAN_*` environment variable's type, default, and live effective value
 - ⚡ **Token-efficient search modes** - New `mode` parameter (`content`/`index`/`auto`) and `OBSIDIAN_SEARCH_RESULT_MODE` config for lightweight search results on large result sets
+- 🛑 **ReDoS hardening** - `search_by_regex` now rejects patterns over 500 characters and patterns with an obvious catastrophic-backtracking shape (a quantified group nested inside another quantifier, e.g. `(a+)+`), and every per-file regex match runs in a worker process under a hard timeout, so a pathological pattern can no longer hang or block the server
+- 🔒 **Write-lock coverage expanded** - the write-serialization lock, previously covering only note create/update/delete/append, now also guards `move_note`, `rename_note`, `move_folder`, `add_tags`/`update_tags`/`remove_tags`, and `batch_update_properties`, so concurrent calls to those tools can no longer lose an update
+- 🧹 **Lint and typecheck clean** - `ruff` and `pyright` now report zero findings across the project; every remaining broad `except Exception` is a documented, deliberate exception in `pyproject.toml` rather than unaddressed debt
+- 🧪 **Test-suite determinism** - added `tests/conftest.py` with an autouse fixture that restores environment variables and resets the vault singleton between tests, closing state leaks between test files
+- 🏗️ **Modular restructuring** - split the ~30 MCP tool wrappers and their underlying implementations out of a handful of large files into focused, single-feature modules (see [Project Structure](#project-structure)); all existing import paths keep working via facade re-exports
+- 🐛 **Bug fixes**:
+  - Fixed `read_image` silently failing to resize images — a positional-argument bug in the MCP tool wrapper meant every call skipped resizing entirely and returned the original, full-size image
+  - Fixed `view_note_images`'s advertised parameter schema for `max_width` (previously showed a default of 1600) not matching its real runtime default of 800
+  - Fixed `find_broken_links` swallowing "note not found" errors when checking a single note, and a sibling-folder prefix-match bug where checking one folder (e.g. `"Projects"`) also matched notes under a differently-named folder sharing that prefix (e.g. `"ProjectsArchive"`)
+  - Fixed `find_orphaned_notes` treating `min_age_days=0` as "not specified" instead of a valid age filter
+  - Fixed property and date search raising an unbound-local error on certain fallback paths instead of returning the intended result
+  - Fixed a `CancelledError` (and other non-`Exception` `BaseException`s) slipping past an `isinstance(result, Exception)` check during parallel regex search, which could crash the request instead of being handled cleanly
+  - Fixed `move_note`/`rename_note` corrupting a note's self-referencing wikilinks (a note linking to itself) during the backlink-rewrite pass
 
 ### v2.1.6 (2025-01-30)
 - 🔍 **Find orphaned notes** - New `find_orphaned_notes` tool for comprehensive vault maintenance
@@ -1372,7 +1391,9 @@ Use 'created' to find notes by creation date, 'modified' for last edit date
 
 ## Publishing (for maintainers)
 
-To publish a new version to PyPI:
+This fork does not currently publish to PyPI — the package name `obsidian-mcp` is already owned by [upstream](https://github.com/natestrong/obsidian-mcp) there, so this fork can't publish under it. Installation is git-only; see [Installation](#installation) above.
+
+The build/publish steps below are kept for reference only, in case this fork is ever published under its own package name:
 
 ```bash
 # 1. Update version in pyproject.toml
@@ -1389,22 +1410,8 @@ twine check dist/*
 twine upload dist/* -u __token__ -p $PYPI_API_KEY
 
 # 6. Create and push git tag
-git tag -a v2.0.2 -m "Release version 2.0.2"
-git push origin v2.0.2
-```
-
-Users can then install and run with:
-```bash
-# Using uvx (recommended - no installation needed)
-uvx obsidian-mcp
-
-# Or install globally with pipx
-pipx install obsidian-mcp
-obsidian-mcp
-
-# Or with pip
-pip install obsidian-mcp
-obsidian-mcp
+git tag -a vX.Y.Z -m "Release version X.Y.Z"
+git push origin vX.Y.Z
 ```
 
 ## Configuration

@@ -16,14 +16,14 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from obsidian_mcp.tools.link_management import build_vault_notes_index
 from obsidian_mcp.tools.note_management import create_note
 from obsidian_mcp.tools.organization import list_tags
-from obsidian_mcp.tools.link_management import build_vault_notes_index
 from obsidian_mcp.utils.filesystem import init_vault
 from obsidian_mcp.utils.vault_config import (
+    check_template_conformance,
     normalize_tag_kebab,
     slugify_kebab,
-    check_template_conformance,
 )
 
 
@@ -82,6 +82,7 @@ class TestTemplateConformance:
         (Path(temp_dir) / "01-projects").mkdir()
 
         import os
+
         os.environ["OBSIDIAN_FOLDER_TEMPLATES"] = (
             '[{"folder":"01-projects","template":"templates/projeto.md"}]'
         )
@@ -99,7 +100,9 @@ class TestTemplateConformance:
 
     def test_missing_heading_rejected(self, templated_vault):
         with pytest.raises(ValueError, match="Missing headings"):
-            check_template_conformance(templated_vault, "01-projects/Note.md", "## Objetivo\n")
+            check_template_conformance(
+                templated_vault, "01-projects/Note.md", "## Objetivo\n"
+            )
 
     def test_out_of_order_headings_rejected(self, templated_vault):
         with pytest.raises(ValueError, match="out of order"):
@@ -152,6 +155,7 @@ class TestVaultCacheIncrementalUpdate:
         # don't set a `description`, so turn the (default-on) requirement
         # off for this vault.
         import os
+
         os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"
         v = init_vault(temp_dir)
         yield v

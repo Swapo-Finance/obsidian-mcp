@@ -21,8 +21,7 @@ import tempfile
 import pytest
 import pytest_asyncio
 
-from obsidian_mcp.utils.filesystem import init_vault, get_vault
-
+from obsidian_mcp.utils.filesystem import get_vault, init_vault
 
 # A description with an unquoted ':' — this is what makes yaml.safe_load
 # reject the whole frontmatter block and fall back to the naive parser.
@@ -54,7 +53,7 @@ class TestFrontmatterFallbackArrayParsing:
         import yaml
 
         content = _frontmatter_with_tags("tags: [alpha]")
-        fm_text = content[4:content.find("\n---\n", 4)]
+        fm_text = content[4 : content.find("\n---\n", 4)]
         with pytest.raises(yaml.YAMLError):
             yaml.safe_load(fm_text)
 
@@ -103,7 +102,12 @@ class TestFrontmatterFallbackArrayParsing:
         )
         frontmatter, _ = vault._parse_frontmatter(content)
         assert frontmatter["tags"] == [
-            "withdraw", "blnk", "inngest", "bug", "critical", "ledger",
+            "withdraw",
+            "blnk",
+            "inngest",
+            "bug",
+            "critical",
+            "ledger",
         ]
 
 
@@ -139,14 +143,17 @@ class TestFrontmatterFallbackEndToEnd:
         result = await create_note("colon-repro.md", content)
         tags = result["details"]["metadata"]["tags"]
         assert sorted(tags) == [
-            "blnk", "bug", "critical", "inngest", "ledger", "withdraw",
+            "blnk",
+            "bug",
+            "critical",
+            "inngest",
+            "ledger",
+            "withdraw",
         ]
 
         vault = get_vault()
         raw = (vault.vault_path / "colon-repro.md").read_text(encoding="utf-8")
-        tags_line = next(
-            line for line in raw.splitlines() if line.startswith("tags:")
-        )
+        tags_line = next(line for line in raw.splitlines() if line.startswith("tags:"))
         # Must stay a 6-element flow-sequence — not one combined
         # "withdraw-blnk-inngest-bug-critical-ledger" slug.
         assert tags_line.count(",") == 5

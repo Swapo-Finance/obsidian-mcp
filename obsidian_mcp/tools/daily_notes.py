@@ -8,13 +8,14 @@ spec section 3's incremental-edit exemption), and appends the given content.
 
 import unicodedata
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastmcp import Context
+
+from ..constants import ERROR_MESSAGES
 from ..utils.filesystem import get_vault
 from ..utils.validation import validate_content
 from ..utils.vault_config import build_template_info, seed_daily_frontmatter
-from ..constants import ERROR_MESSAGES
 from .link_management import validate_wikilinks_for_write
 from .note_management import _serialize_note_writes
 
@@ -22,9 +23,9 @@ from .note_management import _serialize_note_writes
 @_serialize_note_writes
 async def add_daily_note(
     content: str,
-    date: Optional[str] = None,
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    date: str | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Append content to today's daily note, creating it first if needed.
 
@@ -60,7 +61,11 @@ async def add_daily_note(
         # Local clock, not UTC, so the note rotates at local midnight.
         day = datetime.now(timezone.utc).astimezone().date()
 
-    daily_path = f"{vault.daily_dir}/{day.isoformat()}.md" if vault.daily_dir else f"{day.isoformat()}.md"
+    daily_path = (
+        f"{vault.daily_dir}/{day.isoformat()}.md"
+        if vault.daily_dir
+        else f"{day.isoformat()}.md"
+    )
 
     if ctx:
         await ctx.info(f"Appending to daily note: {daily_path}")
@@ -75,7 +80,9 @@ async def add_daily_note(
         # template (if OBSIDIAN_FOLDER_TEMPLATES has a rule for it), so this
         # never needs a separate template-conformance check.
         info = build_template_info(vault, vault.daily_dir or "")
-        base_content = info["skeleton"] if info["enforced"] else f"# {day.isoformat()}\n"
+        base_content = (
+            info["skeleton"] if info["enforced"] else f"# {day.isoformat()}\n"
+        )
         # OBSIDIAN_REQUIRE_FRONTMATTER (default on): the server — not the
         # LLM — is creating this file, so name/description are generated
         # automatically here rather than raising (spec section 10.3's

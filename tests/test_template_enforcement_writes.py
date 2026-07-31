@@ -16,7 +16,11 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from obsidian_mcp.tools.note_management import create_note, edit_note_section, update_note
+from obsidian_mcp.tools.note_management import (
+    create_note,
+    edit_note_section,
+    update_note,
+)
 from obsidian_mcp.utils.filesystem import init_vault
 
 
@@ -66,11 +70,14 @@ class TestCreateNoteEnforcesTemplate:
     async def test_missing_frontmatter_key_raises(self, templated_vault):
         with pytest.raises(ValueError, match="frontmatter"):
             await create_note(
-                "01-projects/Bad.md", "---\ndescription: x\n---\n\n## Objetivo\n\n## Status\n"
+                "01-projects/Bad.md",
+                "---\ndescription: x\n---\n\n## Objetivo\n\n## Status\n",
             )
 
     @pytest.mark.asyncio
-    async def test_error_message_includes_skeleton_and_retry_instruction(self, templated_vault):
+    async def test_error_message_includes_skeleton_and_retry_instruction(
+        self, templated_vault
+    ):
         with pytest.raises(ValueError) as excinfo:
             await create_note("01-projects/Bad.md", "## Objetivo\n")
         message = str(excinfo.value)
@@ -96,15 +103,19 @@ class TestCreateNoteEnforcesTemplate:
     @pytest.mark.asyncio
     async def test_folder_without_rule_is_free_form(self, templated_vault):
         result = await create_note(
-            "elsewhere/Anything.md", "---\ndescription: x\n---\n\nwhatever, no headings needed\n"
+            "elsewhere/Anything.md",
+            "---\ndescription: x\n---\n\nwhatever, no headings needed\n",
         )
         assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_nested_subfolder_under_enforced_folder_also_enforced(self, templated_vault):
+    async def test_nested_subfolder_under_enforced_folder_also_enforced(
+        self, templated_vault
+    ):
         with pytest.raises(ValueError, match="Missing headings"):
             await create_note(
-                "01-projects/sub/Bad.md", "---\ndescription: x\nstatus: a\n---\n\n## Objetivo\n"
+                "01-projects/sub/Bad.md",
+                "---\ndescription: x\nstatus: a\n---\n\n## Objetivo\n",
             )
 
 
@@ -130,7 +141,9 @@ class TestUpdateNoteReplaceEnforcesTemplate:
         assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_create_if_not_exists_enforces_template_on_first_write(self, templated_vault):
+    async def test_create_if_not_exists_enforces_template_on_first_write(
+        self, templated_vault
+    ):
         with pytest.raises(ValueError, match="Missing headings"):
             await update_note(
                 "01-projects/Fresh.md",
@@ -157,7 +170,9 @@ class TestIncrementalEditsExemptFromTemplate:
         # Appending arbitrary prose would break conformance if re-checked —
         # this must succeed regardless.
         result = await update_note(
-            "01-projects/Existing.md", "Some unstructured append.", merge_strategy="append"
+            "01-projects/Existing.md",
+            "Some unstructured append.",
+            merge_strategy="append",
         )
         assert result["success"] is True
 

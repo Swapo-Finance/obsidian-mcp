@@ -23,9 +23,12 @@ observes it - `caplog` does, because the redirect goes through standard
 both assertions (log_handler receives nothing, and caplog captures the
 "was never awaited" line).
 """
+
+import asyncio
 import os
 import shutil
 import tempfile
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -49,8 +52,9 @@ async def vault_with_note():
     os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"
 
     note_relpath = "probe.md"
-    with open(os.path.join(temp_dir, note_relpath), "w") as f:
-        f.write("# Probe\n\nRegression test note.\n")
+    await asyncio.to_thread(
+        Path(temp_dir, note_relpath).write_text, "# Probe\n\nRegression test note.\n"
+    )
 
     init_vault(temp_dir)
 

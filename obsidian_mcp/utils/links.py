@@ -10,14 +10,13 @@ in organization.py) keeps working unchanged.
 """
 
 import re
-from typing import List, Dict
 
 # Regular expressions for matching different link types.
-WIKI_LINK_PATTERN = re.compile(r'\[\[([^\]|]+)(\|([^\]]+))?\]\]')
-MARKDOWN_LINK_PATTERN = re.compile(r'\[([^\]]+)\]\(([^)]+)\)')
+WIKI_LINK_PATTERN = re.compile(r"\[\[([^\]|]+)(\|([^\]]+))?\]\]")
+MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
-def extract_links_from_content(content: str) -> List[Dict[str, str]]:
+def extract_links_from_content(content: str) -> list[dict[str, str]]:
     """
     Extract all links from note content.
 
@@ -42,31 +41,35 @@ def extract_links_from_content(content: str) -> List[Dict[str, str]]:
         alias = match.group(3)
 
         # Ensure .md extension for internal links
-        if not link_path.endswith('.md') and not link_path.startswith('http'):
-            link_path += '.md'
+        if not link_path.endswith(".md") and not link_path.startswith("http"):
+            link_path += ".md"
 
-        links.append({
-            'path': link_path,
-            'display_text': alias.strip() if alias else match.group(1).strip(),
-            'type': 'wiki'
-        })
+        links.append(
+            {
+                "path": link_path,
+                "display_text": alias.strip() if alias else match.group(1).strip(),
+                "type": "wiki",
+            }
+        )
 
     # Extract markdown-style links (only internal links, not URLs)
     for match in MARKDOWN_LINK_PATTERN.finditer(content):
         link_path = match.group(2).strip()
 
         # Skip external URLs
-        if link_path.startswith('http://') or link_path.startswith('https://'):
+        if link_path.startswith(("http://", "https://")):
             continue
 
         # Ensure .md extension
-        if not link_path.endswith('.md'):
-            link_path += '.md'
+        if not link_path.endswith(".md"):
+            link_path += ".md"
 
-        links.append({
-            'path': link_path,
-            'display_text': match.group(1).strip(),
-            'type': 'markdown'
-        })
+        links.append(
+            {
+                "path": link_path,
+                "display_text": match.group(1).strip(),
+                "type": "markdown",
+            }
+        )
 
     return links

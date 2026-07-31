@@ -116,32 +116,28 @@ RESPONSE_STRUCTURES = {
         "success": True,
         "path": str,  # The note/folder path
         "operation": str,  # "created", "read", "updated", "deleted"
-        "details": dict  # Operation-specific details
+        "details": dict,  # Operation-specific details
     },
-    
     # Search operations
     "search_results": {
         "results": list,  # List of search result items
         "count": int,  # Total number of results
         "query": dict,  # The search parameters used
-        "truncated": bool  # Whether results were limited
+        "truncated": bool,  # Whether results were limited
     },
-    
     # Listing operations
     "list_results": {
         "items": list,  # List of items (notes, folders, tags, etc.)
         "total": int,  # Total count
-        "scope": dict  # Parameters like directory, recursive, etc.
+        "scope": dict,  # Parameters like directory, recursive, etc.
     },
-    
     # Analysis operations (backlinks, broken links, etc.)
     "analysis_results": {
         "findings": list,  # List of findings
         "summary": dict,  # Statistical summary
         "target": str,  # What was analyzed
-        "scope": dict  # Analysis parameters
+        "scope": dict,  # Analysis parameters
     },
-    
     # Tag operations
     "tag_operation": {
         "success": True,
@@ -150,10 +146,9 @@ RESPONSE_STRUCTURES = {
         "tags": {
             "before": list,  # Tags before operation
             "after": list,  # Tags after operation
-            "changes": dict  # What changed
-        }
+            "changes": dict,  # What changed
+        },
     },
-    
     # Move operations
     "move_operation": {
         "success": True,
@@ -162,15 +157,14 @@ RESPONSE_STRUCTURES = {
         "type": str,  # "note" or "folder"
         "details": {
             "items_moved": int,  # Number of items moved
-            "links_updated": int  # Number of links updated
-        }
+            "links_updated": int,  # Number of links updated
+        },
     },
-    
     # Error response
     "error": {
         "success": False,
         "error": str,  # Error type/code
         "message": str,  # Human-readable message
-        "suggestions": list  # Actionable suggestions
-    }
+        "suggestions": list,  # Actionable suggestions
+    },
 }
