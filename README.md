@@ -117,7 +117,7 @@ This command will:
    - Location: `~/.codeium/windsurf/mcp_config.json`
 
    ```json
-   {
+   { 
      "mcpServers": {
        "obsidian": {
          "command": "uvx",
@@ -133,7 +133,7 @@ This command will:
    Then: Open Windsurf Settings → Advanced Settings → Cascade → Add Server → Refresh
    </details>
 
-   <details>
+   <details open>
    <summary><b>Full example — all fork features enabled</b></summary>
 
    Same shape in any of the clients above — only the `env` block changes; `command`/`args` stay whatever that client's config already uses.
@@ -179,97 +179,47 @@ Here are some example prompts to get started:
 - "Search for all notes about project planning"
 - "Read my Ideas/startup.md note"
 
-### Development Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/Swapo-Finance/obsidian-mcp
-   cd obsidian-mcp
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   uv sync --extra dev
-   ```
-
-   This installs the runtime dependencies plus the dev toolchain (pytest, pytest-asyncio, pytest-mock, ruff, pyright) straight from `pyproject.toml` — the same command CI runs.
-
-3. **Configure environment variables:**
-   ```bash
-   export OBSIDIAN_VAULT_PATH="/path/to/your/obsidian/vault"
-   ```
-
-4. **Run the server:**
-   ```bash
-   uv run obsidian-mcp
-   ```
-
-5. **Add to Claude Desktop (for development):**
-
-   Edit your Claude Desktop config file:
-   - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-   - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-
-   ```json
-   {
-     "mcpServers": {
-       "obsidian": {
-         "command": "uv",
-         "args": ["run", "--directory", "/path/to/obsidian-mcp", "obsidian-mcp"],
-         "env": {
-           "OBSIDIAN_VAULT_PATH": "/path/to/your/obsidian/vault"
-         }
-       }
-     }
-   }
-   ```
-
-   The `env` block accepts any of the fork's `OBSIDIAN_*` variables (templates, write policies, search mode, ...) — see the [full example](#manual-configuration) above or the complete reference in [Configuration](#configuration) below.
-
-## Project Structure
-
-```
-obsidian-mcp/
-├── obsidian_mcp/
-│   ├── app.py                       # Boot sequence + shared FastMCP instance (leaf module — imports nothing from tools/ or server.py)
-│   ├── server.py                    # Console-script entry point; imports the mcp_*.py modules below and re-exports all 30 tool wrappers + mcp + main
-│   ├── mcp_notes.py                 # @mcp.tool() wrappers: create/read/update/delete_note, edit_note_section
-│   ├── mcp_search.py                # @mcp.tool() wrappers: search_notes, search_by_date, search_by_regex
-│   ├── mcp_discovery.py             # @mcp.tool() wrappers: list_notes, list_folders, search_by_property, get_note_info
-│   ├── mcp_organization.py          # @mcp.tool() wrappers: move_note, rename_note, create_folder, move_folder
-│   ├── mcp_tags.py                  # @mcp.tool() wrappers: add/update/remove/list_tags
-│   ├── mcp_links.py                 # @mcp.tool() wrappers: backlinks, outgoing links, broken links, find_orphaned_notes
-│   ├── mcp_properties.py            # @mcp.tool() wrapper: batch_update_properties
-│   ├── mcp_media_meta.py            # @mcp.tool() wrappers: add_daily_note, read_image, view_note_images, get_note_template, help
-│   ├── configure.py                 # obsidian-mcp-configure console script (Claude Desktop auto-config)
-│   ├── constants.py                 # ERROR_MESSAGES and RESPONSE_STRUCTURES
-│   ├── tools/                       # ~28 modules, one feature area each — the logic behind every *_tool wrapper above
-│   │   ├── note_management.py       # create_note/update_note/delete_note + the write-policy chain (re-exported from write_policy.py)
-│   │   ├── search_discovery.py      # search_notes, search_by_property, list_notes, list_folders (facade for search_by_date/regex + internals)
-│   │   ├── organization.py          # facade — tags, move/rename, folders, batch property updates now live in their own modules
-│   │   ├── link_management.py       # get_backlinks, get_outgoing_links (facade for broken-link/wikilink-validation internals)
-│   │   └── ...                      # note_move, note_rename, folders, tag_editing, batch_properties, search_regex, wikilink_validation, write_policy, and more
-│   ├── models/
-│   │   └── obsidian.py              # Note, NoteMetadata pydantic models
-│   └── utils/                       # ~16 modules — vault I/O, path resolution, config
-│       ├── filesystem.py            # ObsidianVault — single I/O choke point, owns the search index and cache
-│       ├── persistent_index.py      # SQLite (aiosqlite) search index; regex matches run with a per-file worker-process timeout
-│       ├── vault_cache.py           # stat cache with TTL
-│       ├── vault_config.py          # facade — folder templates, path normalization, slug/tag kebab, frontmatter requirements now live in their own modules
-│       ├── env.py                   # pure OBSIDIAN_* env-var readers
-│       ├── validation.py            # validators + validate_params decorator
-│       └── validators.py            # validate_note_path, sanitize_path, is_markdown_file
-├── tests/                           # 34 files + conftest.py, flat, one per feature, 413 tests total
-├── pyproject.toml                   # dependencies, [project.scripts] entry points, ruff/pyright config
-├── CLAUDE.md                        # Instructions for Claude Code
-└── README.md
-```
-
 ## Available Tools
+
+| Tool | What it does |
+|---|---|
+| [`read_note`](#read_note) | Read a note's content and metadata |
+| [`create_note`](#create_note) | Create a new note, or overwrite an existing one |
+| [`update_note`](#update_note) | Replace or append to an existing note's content |
+| [`edit_note_section`](#edit_note_section) | Edit one section of a note, identified by its markdown heading |
+| [`delete_note`](#delete_note) | Delete a note from the vault |
+| [`add_daily_note`](#add_daily_note) | Append to today's (or a given date's) daily note, creating it from template if needed |
+| [`search_notes`](#search_notes) | Search notes by text, tag, path, or frontmatter property |
+| [`search_by_date`](#search_by_date) | Find notes by creation or modification date |
+| [`search_by_regex`](#search_by_regex) | Search note content with regular expressions |
+| [`search_by_property`](#search_by_property) | Query notes by frontmatter property values, with comparison operators |
+| [`list_notes`](#list_notes) | List notes in the vault or in one directory |
+| [`list_folders`](#list_folders) | List folders in the vault or in one directory |
+| [`create_folder`](#create_folder) | Create a folder, including any missing parent folders |
+| [`move_note`](#move_note) | Move a note to another folder, optionally renaming it |
+| [`rename_note`](#rename_note) | Rename a note in place and update every wikilink pointing at it |
+| [`move_folder`](#move_folder) | Move a folder and all of its contents |
+| [`add_tags`](#add_tags) | Add tags to a note's frontmatter |
+| [`update_tags`](#update_tags) | Replace or merge a note's tags |
+| [`remove_tags`](#remove_tags) | Remove tags from a note's frontmatter |
+| [`batch_update_properties`](#batch_update_properties) | Add or remove frontmatter properties and tags across many notes at once |
+| [`get_note_info`](#get_note_info) | Get a note's metadata and stats without reading its full content |
+| [`read_image`](#read_image) | View an image from the vault, automatically resized |
+| [`view_note_images`](#view_note_images) | View every image embedded in a note |
+| [`list_tags`](#list_tags) | List every tag in the vault with usage counts |
+| [`find_orphaned_notes`](#find_orphaned_notes) | Find notes with no backlinks, no links, no tags, or no metadata |
+| [`get_backlinks`](#get_backlinks) | Find every note that links to a given note |
+| [`get_outgoing_links`](#get_outgoing_links) | List every link from a note, optionally checking that each target exists |
+| [`find_broken_links`](#find_broken_links) | Find wikilinks pointing at notes that don't exist |
+| [`get_note_template`](#get_note_template) | Show the template rule enforced for a folder, with a ready-to-paste skeleton |
+| [`help`](#help) | List every `OBSIDIAN_*` variable with its current effective value, plus a tool index |
 
 ### Note Management
 
-#### `read_note`
+<a id="read_note"></a>
+<details>
+<summary><b><code>read_note</code></b></summary>
+
 Read the content and metadata of a specific note.
 
 **Parameters:**
@@ -288,7 +238,11 @@ Read the content and metadata of a specific note.
 }
 ```
 
-#### `create_note`
+</details>
+<a id="create_note"></a>
+<details>
+<summary><b><code>create_note</code></b></summary>
+
 Create a new note or update an existing one.
 
 **Parameters:**
@@ -301,7 +255,11 @@ Create a new note or update an existing one.
 - Use `list_tags` to see existing tags and maintain consistency
 - Tags can be added as inline hashtags (`#tag`) or in frontmatter
 
-#### `update_note`
+</details>
+<a id="update_note"></a>
+<details>
+<summary><b><code>update_note</code></b></summary>
+
 Update the content of an existing note.
 
 ⚠️ **IMPORTANT**: By default, this tool REPLACES the entire note content. Always read the note first if you need to preserve existing content.
@@ -320,7 +278,11 @@ Update the content of an existing note.
 3. Update with the complete new content
 4. Or use append mode to add content to the end
 
-#### `edit_note_section`
+</details>
+<a id="edit_note_section"></a>
+<details>
+<summary><b><code>edit_note_section</code></b></summary>
+
 Edit a specific section of a note identified by a markdown heading.
 
 **Parameters:**
@@ -359,15 +321,24 @@ await edit_note_section(
 - Building up notes incrementally by section
 - Inserting content at precise locations
 
-#### `delete_note`
+</details>
+<a id="delete_note"></a>
+<details>
+<summary><b><code>delete_note</code></b></summary>
+
 Delete a note from the vault.
 
 **Parameters:**
 - `path`: Path to the note to delete
 
+</details>
+
 ### Daily Notes
 
-#### `add_daily_note`
+<a id="add_daily_note"></a>
+<details>
+<summary><b><code>add_daily_note</code></b></summary>
+
 Append content to today's (or a given date's) daily note, automatically creating it from the configured daily folder's template if it doesn't exist yet. The one write tool that doesn't require reading first.
 
 **Parameters:**
@@ -397,9 +368,14 @@ Append content to today's (or a given date's) daily note, automatically creating
 **When to use:** Journaling or logging without looking up the daily note's path first.
 **When NOT to use:** Editing a specific section of an existing daily note (read it, then use `edit_note_section`); non-daily notes (use `create_note`/`update_note`).
 
+</details>
+
 ### Search and Discovery
 
-#### `search_notes`
+<a id="search_notes"></a>
+<details>
+<summary><b><code>search_notes</code></b></summary>
+
 Search for notes containing specific text or tags.
 
 **Parameters:**
@@ -437,7 +413,11 @@ Search for notes containing specific text or tags.
 - `property:tags:project` - Find notes with "project" in their tags array
 - `property:due_date:<2024-12-31` - Find notes with due dates before Dec 31, 2024
 
-#### `search_by_date`
+</details>
+<a id="search_by_date"></a>
+<details>
+<summary><b><code>search_by_date</code></b></summary>
+
 Search for notes by creation or modification date.
 
 **Parameters:**
@@ -467,7 +447,11 @@ Search for notes by creation or modification date.
 - "Find notes created in the last 30 days" → `search_by_date("created", 30, "within")`
 - "What notes were modified exactly 2 days ago?" → `search_by_date("modified", 2, "exactly")`
 
-#### `search_by_regex`
+</details>
+<a id="search_by_regex"></a>
+<details>
+<summary><b><code>search_by_regex</code></b></summary>
+
 Search for notes using regular expressions for advanced pattern matching.
 
 **Parameters:**
@@ -521,7 +505,11 @@ Search for notes using regular expressions for advanced pattern matching.
 }
 ```
 
-#### `search_by_property`
+</details>
+<a id="search_by_property"></a>
+<details>
+<summary><b><code>search_by_property</code></b></summary>
+
 Search for notes by their frontmatter property values with advanced filtering.
 
 **Parameters:**
@@ -569,7 +557,11 @@ Search for notes by their frontmatter property values with advanced filtering.
 - Find notes with deadlines: `search_by_property("deadline", operator="exists")`
 - Find notes by partial author: `search_by_property("author", "john", "contains")`
 
-#### `list_notes`
+</details>
+<a id="list_notes"></a>
+<details>
+<summary><b><code>list_notes</code></b></summary>
+
 List notes in your vault with optional recursive traversal.
 
 **Parameters:**
@@ -589,7 +581,11 @@ List notes in your vault with optional recursive traversal.
 }
 ```
 
-#### `list_folders`
+</details>
+<a id="list_folders"></a>
+<details>
+<summary><b><code>list_folders</code></b></summary>
+
 List folders in your vault with optional recursive traversal.
 
 **Parameters:**
@@ -610,9 +606,14 @@ List folders in your vault with optional recursive traversal.
 }
 ```
 
+</details>
+
 ### Organization
 
-#### `create_folder`
+<a id="create_folder"></a>
+<details>
+<summary><b><code>create_folder</code></b></summary>
+
 Create a new folder in the vault, including all parent folders in the path.
 
 **Parameters:**
@@ -631,7 +632,11 @@ Create a new folder in the vault, including all parent folders in the path.
 
 **Note:** This tool will create all necessary parent folders. For example, if "Research" exists but "Studies" doesn't, it will create both "Studies" and "2024".
 
-#### `move_note`
+</details>
+<a id="move_note"></a>
+<details>
+<summary><b><code>move_note</code></b></summary>
+
 Move a note to a new location, optionally with a new name.
 
 **Parameters:**
@@ -660,7 +665,11 @@ Move a note to a new location, optionally with a new name.
 }
 ```
 
-#### `rename_note`
+</details>
+<a id="rename_note"></a>
+<details>
+<summary><b><code>rename_note</code></b></summary>
+
 Rename a note and automatically update all references to it throughout your vault.
 
 **Parameters:**
@@ -693,7 +702,11 @@ Rename a note and automatically update all references to it throughout your vaul
 - Shows which notes were updated for transparency
 - Can only rename within the same directory (use `move_note` to change directories)
 
-#### `move_folder`
+</details>
+<a id="move_folder"></a>
+<details>
+<summary><b><code>move_folder</code></b></summary>
+
 Move an entire folder and all its contents to a new location.
 
 **Parameters:**
@@ -713,7 +726,11 @@ Move an entire folder and all its contents to a new location.
 }
 ```
 
-#### `add_tags`
+</details>
+<a id="add_tags"></a>
+<details>
+<summary><b><code>add_tags</code></b></summary>
+
 Add tags to a note's frontmatter.
 
 **Parameters:**
@@ -725,7 +742,11 @@ Add tags to a note's frontmatter.
 - Hierarchical tags: `["project/web", "work/meetings/standup"]`
 - Mixed: `["urgent", "project/mobile", "status/active"]`
 
-#### `update_tags`
+</details>
+<a id="update_tags"></a>
+<details>
+<summary><b><code>update_tags</code></b></summary>
+
 Update tags on a note - either replace all tags or merge with existing.
 
 **Parameters:**
@@ -740,14 +761,22 @@ AI: [reads note] "This note is about machine learning research..."
 AI: [uses update_tags to set tags: ["ai", "research", "neural-networks"]]
 ```
 
-#### `remove_tags`
+</details>
+<a id="remove_tags"></a>
+<details>
+<summary><b><code>remove_tags</code></b></summary>
+
 Remove tags from a note's frontmatter.
 
 **Parameters:**
 - `path`: Path to the note
 - `tags`: List of tags to remove
 
-#### `batch_update_properties`
+</details>
+<a id="batch_update_properties"></a>
+<details>
+<summary><b><code>batch_update_properties</code></b></summary>
+
 Batch update properties across multiple notes.
 
 **Parameters:**
@@ -789,7 +818,11 @@ Batch update properties across multiple notes.
 }
 ```
 
-#### `get_note_info`
+</details>
+<a id="get_note_info"></a>
+<details>
+<summary><b><code>get_note_info</code></b></summary>
+
 Get metadata and statistics about a note without retrieving its full content.
 
 **Parameters:**
@@ -813,9 +846,14 @@ Get metadata and statistics about a note without retrieving its full content.
 }
 ```
 
+</details>
+
 ### Image Management
 
-#### `read_image`
+<a id="read_image"></a>
+<details>
+<summary><b><code>read_image</code></b></summary>
+
 View an image from your vault. Images are automatically resized to a maximum width of 1600px for optimal display in Claude Desktop.
 
 **Parameters:**
@@ -840,7 +878,11 @@ View an image from your vault. Images are automatically resized to a maximum wid
 **Supported formats:**
 - PNG, JPG/JPEG, GIF, BMP, WebP
 
-#### `view_note_images`
+</details>
+<a id="view_note_images"></a>
+<details>
+<summary><b><code>view_note_images</code></b></summary>
+
 Extract and view all images embedded in a note.
 
 **Parameters:**
@@ -868,7 +910,11 @@ Extract and view all images embedded in a note.
 - Review design mockups and visual documentation
 - Extract visual information for AI analysis
 
-#### `list_tags`
+</details>
+<a id="list_tags"></a>
+<details>
+<summary><b><code>list_tags</code></b></summary>
+
 List all unique tags used across your vault with usage statistics.
 
 **Parameters:**
@@ -913,6 +959,8 @@ List all unique tags used across your vault with usage statistics.
 - May take several seconds for large vaults
 - Uses concurrent batching for optimization
 
+</details>
+
 ### Link Management
 
 **⚡ Performance Note:** Link management tools have been heavily optimized in v1.1.5:
@@ -921,7 +969,10 @@ List all unique tags used across your vault with usage statistics.
 - **2x faster** backlink searches
 - Includes automatic caching and batch processing
 
-#### `find_orphaned_notes`
+<a id="find_orphaned_notes"></a>
+<details>
+<summary><b><code>find_orphaned_notes</code></b></summary>
+
 Find notes that may need organization or cleanup based on various criteria.
 
 **Parameters:**
@@ -961,7 +1012,11 @@ Find notes that may need organization or cleanup based on various criteria.
 - Identifying notes that need better organization
 - Preparing for vault reorganization
 
-#### `get_backlinks`
+</details>
+<a id="get_backlinks"></a>
+<details>
+<summary><b><code>get_backlinks</code></b></summary>
+
 Find all notes that link to a specific note.
 
 **Parameters:**
@@ -990,7 +1045,11 @@ Find all notes that link to a specific note.
 - Discovering relationships between notes
 - Building a mental map of note connections
 
-#### `get_outgoing_links`
+</details>
+<a id="get_outgoing_links"></a>
+<details>
+<summary><b><code>get_outgoing_links</code></b></summary>
+
 List all links from a specific note.
 
 **Parameters:**
@@ -1018,7 +1077,11 @@ List all links from a specific note.
 - Checking note dependencies before moving/deleting
 - Exploring the structure of index or hub notes
 
-#### `find_broken_links`
+</details>
+<a id="find_broken_links"></a>
+<details>
+<summary><b><code>find_broken_links</code></b></summary>
+
 Find all broken links in the vault, a specific directory, or a single note.
 
 **Parameters:**
@@ -1047,9 +1110,14 @@ Find all broken links in the vault, a specific directory, or a single note.
 - Regular vault maintenance
 - Before reorganizing folder structure
 
+</details>
+
 ### Templates & Configuration
 
-#### `get_note_template`
+<a id="get_note_template"></a>
+<details>
+<summary><b><code>get_note_template</code></b></summary>
+
 Show the per-folder template rule (if any) that `create_note`/`update_note` will enforce for a given note or folder path — the required headings, required frontmatter keys, and a ready-to-use skeleton.
 
 **Parameters:**
@@ -1072,7 +1140,11 @@ Show the per-folder template rule (if any) that `create_note`/`update_note` will
 
 **When to use:** Before writing into a folder you suspect has an enforced template, or right after a template-conformance error, to get the exact skeleton for a retry.
 
-#### `help`
+</details>
+<a id="help"></a>
+<details>
+<summary><b><code>help</code></b></summary>
+
 Return a live catalog of every `OBSIDIAN_*` environment variable — name, type, default, and the current effective value read straight off the running server (not just the static default) — plus an explanation of how folder/template/daily-dir paths get resolved (vault-relative, vault-name-prefixed, or absolute/`~`), and a one-line index of every registered tool. Far cheaper than requesting the full tool-list schema.
 
 **Parameters:**
@@ -1081,6 +1153,47 @@ Return a live catalog of every `OBSIDIAN_*` environment variable — name, type,
 **Returns:** A JSON object with one entry per `OBSIDIAN_*` variable (name, type, default, and current effective value), a path-resolution explainer, and a one-line index of every registered tool.
 
 **When to use:** To find out which environment variable controls a behavior (or its current value), or how a configured path will be interpreted, without reading source code.
+
+</details>
+
+## Project Structure
+
+```
+obsidian-mcp/
+├── obsidian_mcp/
+│   ├── app.py                       # Boot sequence + shared FastMCP instance (leaf module — imports nothing from tools/ or server.py)
+│   ├── server.py                    # Console-script entry point; imports the mcp_*.py modules below and re-exports all 30 tool wrappers + mcp + main
+│   ├── mcp_notes.py                 # @mcp.tool() wrappers: create/read/update/delete_note, edit_note_section
+│   ├── mcp_search.py                # @mcp.tool() wrappers: search_notes, search_by_date, search_by_regex
+│   ├── mcp_discovery.py             # @mcp.tool() wrappers: list_notes, list_folders, search_by_property, get_note_info
+│   ├── mcp_organization.py          # @mcp.tool() wrappers: move_note, rename_note, create_folder, move_folder
+│   ├── mcp_tags.py                  # @mcp.tool() wrappers: add/update/remove/list_tags
+│   ├── mcp_links.py                 # @mcp.tool() wrappers: backlinks, outgoing links, broken links, find_orphaned_notes
+│   ├── mcp_properties.py            # @mcp.tool() wrapper: batch_update_properties
+│   ├── mcp_media_meta.py            # @mcp.tool() wrappers: add_daily_note, read_image, view_note_images, get_note_template, help
+│   ├── configure.py                 # obsidian-mcp-configure console script (Claude Desktop auto-config)
+│   ├── constants.py                 # ERROR_MESSAGES and RESPONSE_STRUCTURES
+│   ├── tools/                       # ~28 modules, one feature area each — the logic behind every *_tool wrapper above
+│   │   ├── note_management.py       # create_note/update_note/delete_note + the write-policy chain (re-exported from write_policy.py)
+│   │   ├── search_discovery.py      # search_notes, search_by_property, list_notes, list_folders (facade for search_by_date/regex + internals)
+│   │   ├── organization.py          # facade — tags, move/rename, folders, batch property updates now live in their own modules
+│   │   ├── link_management.py       # get_backlinks, get_outgoing_links (facade for broken-link/wikilink-validation internals)
+│   │   └── ...                      # note_move, note_rename, folders, tag_editing, batch_properties, search_regex, wikilink_validation, write_policy, and more
+│   ├── models/
+│   │   └── obsidian.py              # Note, NoteMetadata pydantic models
+│   └── utils/                       # ~16 modules — vault I/O, path resolution, config
+│       ├── filesystem.py            # ObsidianVault — single I/O choke point, owns the search index and cache
+│       ├── persistent_index.py      # SQLite (aiosqlite) search index; regex matches run with a per-file worker-process timeout
+│       ├── vault_cache.py           # stat cache with TTL
+│       ├── vault_config.py          # facade — folder templates, path normalization, slug/tag kebab, frontmatter requirements now live in their own modules
+│       ├── env.py                   # pure OBSIDIAN_* env-var readers
+│       ├── validation.py            # validators + validate_params decorator
+│       └── validators.py            # validate_note_path, sanitize_path, is_markdown_file
+├── tests/                           # 34 files + conftest.py, flat, one per feature, 413 tests total
+├── pyproject.toml                   # dependencies, [project.scripts] entry points, ruff/pyright config
+├── CLAUDE.md                        # Instructions for Claude Code
+└── README.md
+```
 
 ## Note Templates & Write Policies
 
@@ -1121,39 +1234,9 @@ Not enforced on `update_note` append or `edit_note_section` — incremental edit
 
 Writes are serialized through a single lock, so two overlapping edits (e.g. two concurrent `edit_note_section` calls) can't silently discard each other's changes.
 
-## Testing
-
-### Running Tests
-
-**`OBSIDIAN_VAULT_PATH` must be set to an existing directory before running pytest at all** — `obsidian_mcp/server.py` raises `ValueError` at import time if it's unset, which fails the entire test collection, not just one test.
-
-```bash
-OBSIDIAN_VAULT_PATH=/tmp/some-existing-dir pytest
-```
-
-Tests create temporary vaults for isolation and don't require a running Obsidian instance. The suite is 34 files, flat (no subdirectories), one file per feature area, 413 test functions total, plus a `conftest.py` holding one autouse fixture that resets environment variables and the vault singleton between tests.
-
-**CI:** GitHub Actions runs the suite across Python 3.10/3.11/3.12 via `uv sync --extra dev` + `uv run pytest -q`, plus an advisory (non-blocking) `ruff`/`pyright` pass scoped to files changed in the PR.
-
-### Testing with MCP Inspector
-
-1. **Set your vault path:**
-   ```bash
-   export OBSIDIAN_VAULT_PATH="/path/to/your/vault"
-   ```
-
-2. **Run the MCP Inspector:**
-   ```bash
-   npx @modelcontextprotocol/inspector python -m obsidian_mcp.server
-   ```
-
-3. **Open the Inspector UI** at `http://localhost:5173`
-
-4. **Test the tools** interactively with your actual vault
-
 ## Integration with Claude Desktop
 
-For development installations, see the [Development Installation](#development-installation) section above.
+For development installations, see the [Development Installation](#development-installation) section below.
 
 ## Enhanced Error Handling
 
@@ -1183,39 +1266,6 @@ Invalid date_type: 'invalid'.
 Must be either 'created' or 'modified'. 
 Use 'created' to find notes by creation date, 'modified' for last edit date
 ```
-
-## Troubleshooting
-
-### "Vault not found" error
-- Ensure the OBSIDIAN_VAULT_PATH environment variable is set correctly
-- Verify the path points to an existing Obsidian vault directory
-- Check that you have read/write permissions for the vault directory
-
-### Tags not showing up
-- Ensure tags are properly formatted (with or without # prefix)
-- Tags in frontmatter should be in YAML array format: `tags: [tag1, tag2]`
-- Inline tags should use the # prefix: `#project #urgent`
-- Tags inside code blocks are automatically excluded
-
-### "File too large" error
-- The server has a 10MB limit for note files and 50MB for images
-- This prevents memory issues with very large files
-- Consider splitting large notes into smaller ones
-
-### "Module not found" error
-- Ensure your virtual environment is activated (or use `uv run` to avoid manual activation)
-- Run from the project root: `uv run obsidian-mcp` (or `python -m obsidian_mcp.server`)
-- Verify all dependencies are installed: `uv sync --extra dev`
-
-### Empty results when listing notes
-- Specify a directory when using `list_notes` (e.g., "Daily", "Projects")
-- Root directory listing requires recursive implementation
-- Check if notes are in subdirectories
-
-### Tags not updating
-- Ensure notes have YAML frontmatter section for frontmatter tags
-- Frontmatter must include a `tags:` field (even if empty)
-- The server now properly reads both frontmatter tags and inline hashtags
 
 ## Best Practices for AI Assistants
 
@@ -1255,7 +1305,146 @@ Use 'created' to find notes by creation date, 'modified' for last edit date
 - Large files are rejected to prevent memory exhaustion
 - Path validation prevents access to system files
 
+## Configuration
+
+### Performance and Indexing
+
+The server now includes a **persistent search index** using SQLite for dramatically improved performance:
+
+#### Key Features:
+- **Instant startup** - No need to rebuild index on every server start
+- **Incremental updates** - Only re-indexes files that have changed
+- **60x faster searches** - SQLite queries are much faster than scanning all files
+- **Lower memory usage** - Files are loaded on-demand rather than all at once
+
+#### Configuration Options:
+
+All behavior is controlled via `OBSIDIAN_*` environment variables:
+
+| Variable | Controls | Default | Valid values |
+|---|---|---|---|
+| `OBSIDIAN_VAULT_PATH` | Path to the vault (required) | *(none — required)* | any existing directory |
+| `OBSIDIAN_LOG_LEVEL` | Server log verbosity | `INFO` | `DEBUG\|INFO\|WARNING\|ERROR\|CRITICAL` |
+| `OBSIDIAN_FOLDER_TEMPLATES` | Per-folder note templates | unset (off) | JSON array, e.g. `[{"folder":"01-projects","template":"templates/project.md"}]` |
+| `OBSIDIAN_REQUIRE_FRONTMATTER` | Require `name`+`description` frontmatter on full-content writes | `true` | boolean |
+| `OBSIDIAN_WIKILINK_POLICY` | How broken `[[wikilinks]]` are handled on write | `warn` | `strict\|warn\|off` |
+| `OBSIDIAN_NOTE_SIZE_POLICY` | How exceeding the line-count ceiling is handled | `warn` | `strict\|warn\|off` |
+| `OBSIDIAN_MAX_NOTE_LINES` | Line-count ceiling per note | `500` | integer |
+| `OBSIDIAN_APPEND_HEADROOM_LINES` | Safety margin subtracted from the ceiling for incremental writes | `100` | integer |
+| `OBSIDIAN_TAG_STYLE` | Kebab-normalize frontmatter tags on write | `as-is` | `kebab\|as-is` |
+| `OBSIDIAN_SLUG_STYLE` | Kebab-slugify filenames on write | `as-is` | `kebab\|as-is` |
+| `OBSIDIAN_DAILY_DIR` | Folder for daily notes (`add_daily_note`) | `daily` | vault-relative/absolute/`~` path |
+| `OBSIDIAN_SEARCH_RESULT_MODE` | Default result shape for search tools | `auto` | `content\|index\|auto` |
+| `OBSIDIAN_SEARCH_INDEX_THRESHOLD` | Result count where `auto` mode switches to `index` shape | `10` | integer |
+| `OBSIDIAN_AUTO_INDEX_UPDATE` | Whether the SQLite search index refreshes automatically | `true` | boolean |
+| `OBSIDIAN_INDEX_UPDATE_INTERVAL` | Seconds between background index refreshes | `300` | integer |
+| `OBSIDIAN_INDEX_BATCH_SIZE` | Files re-indexed per batch during a refresh | `50` | integer |
+| `OBSIDIAN_CACHE_STAT_TTL_SECONDS` | Max age of the in-memory stat cache before re-checking disk | `30` | integer (`0` = always re-check) |
+
+Booleans accept `true/1/yes/on` (case-insensitive) as truthy, anything else as false.
+
+The `help` MCP tool returns this same catalog live, including each variable's current effective value, from inside a running session.
+
+The search index is stored in your vault at `.obsidian/mcp-search-index.db`.
+
+### Performance Notes
+
+- **Search indexing** - With persistent index, only changed files are re-indexed
+- **Concurrent operations** - File operations use async I/O for better performance
+- **Large vaults** - Incremental indexing makes large vaults (10,000+ notes) usable
+- **Image handling** - Images are automatically resized to prevent memory issues
+
+### Migration from REST API Version
+
+If you were using a previous version that required the Local REST API plugin:
+
+1. **You no longer need the Obsidian Local REST API plugin** - This server now uses direct filesystem access
+2. Replace `OBSIDIAN_REST_API_KEY` with `OBSIDIAN_VAULT_PATH` in your configuration
+3. Remove any `OBSIDIAN_API_URL` settings
+4. The new version is significantly faster and more reliable
+5. All features work offline without requiring Obsidian to be running
+
+## Troubleshooting
+
+### "Vault not found" error
+- Ensure the OBSIDIAN_VAULT_PATH environment variable is set correctly
+- Verify the path points to an existing Obsidian vault directory
+- Check that you have read/write permissions for the vault directory
+
+### Tags not showing up
+- Ensure tags are properly formatted (with or without # prefix)
+- Tags in frontmatter should be in YAML array format: `tags: [tag1, tag2]`
+- Inline tags should use the # prefix: `#project #urgent`
+- Tags inside code blocks are automatically excluded
+
+### "File too large" error
+- The server has a 10MB limit for note files and 50MB for images
+- This prevents memory issues with very large files
+- Consider splitting large notes into smaller ones
+
+### "Module not found" error
+- Ensure your virtual environment is activated (or use `uv run` to avoid manual activation)
+- Run from the project root: `uv run obsidian-mcp` (or `python -m obsidian_mcp.server`)
+- Verify all dependencies are installed: `uv sync --extra dev`
+
+### Empty results when listing notes
+- Specify a directory when using `list_notes` (e.g., "Daily", "Projects")
+- Root directory listing requires recursive implementation
+- Check if notes are in subdirectories
+
+### Tags not updating
+- Ensure notes have YAML frontmatter section for frontmatter tags
+- Frontmatter must include a `tags:` field (even if empty)
+- The server now properly reads both frontmatter tags and inline hashtags
+
 ## Development
+
+### Development Installation
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/Swapo-Finance/obsidian-mcp
+   cd obsidian-mcp
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   uv sync --extra dev
+   ```
+
+   This installs the runtime dependencies plus the dev toolchain (pytest, pytest-asyncio, pytest-mock, ruff, pyright) straight from `pyproject.toml` — the same command CI runs.
+
+3. **Configure environment variables:**
+   ```bash
+   export OBSIDIAN_VAULT_PATH="/path/to/your/obsidian/vault"
+   ```
+
+4. **Run the server:**
+   ```bash
+   uv run obsidian-mcp
+   ```
+
+5. **Add to Claude Desktop (for development):**
+
+   Edit your Claude Desktop config file:
+   - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+   ```json
+   {
+     "mcpServers": {
+       "obsidian": {
+         "command": "uv",
+         "args": ["run", "--directory", "/path/to/obsidian-mcp", "obsidian-mcp"],
+         "env": {
+           "OBSIDIAN_VAULT_PATH": "/path/to/your/obsidian/vault"
+         }
+       }
+     }
+   }
+   ```
+
+   The `env` block accepts any of the fork's `OBSIDIAN_*` variables (templates, write policies, search mode, ...) — see the [full example](#manual-configuration) in Manual Configuration, or the complete reference in [Configuration](#configuration).
 
 ### Code Style
 - Uses FastMCP framework for MCP implementation
@@ -1268,6 +1457,61 @@ Use 'created' to find notes by creation date, 'modified' for last edit date
 2. Export it from `obsidian_mcp/tools/__init__.py`
 3. Add a thin `*_tool` wrapper decorated with `@mcp.tool()` in the matching `mcp_*.py` registration module (`mcp_notes.py`, `mcp_search.py`, `mcp_discovery.py`, `mcp_organization.py`, `mcp_tags.py`, `mcp_links.py`, `mcp_properties.py`, or `mcp_media_meta.py`, grouped to mirror `tools/`) — the wrapper only declares the parameter schema (`Annotated[..., Field(...)]`) and docstring, and delegates to the real implementation; no logic belongs in the wrapper. Add its name to `obsidian_mcp/server.py`'s `__all__` so it's re-exported.
 4. Add tests under `tests/` (one file per feature, matching the existing convention)
+
+## Testing
+
+### Running Tests
+
+**`OBSIDIAN_VAULT_PATH` must be set to an existing directory before running pytest at all** — `obsidian_mcp/server.py` raises `ValueError` at import time if it's unset, which fails the entire test collection, not just one test.
+
+```bash
+OBSIDIAN_VAULT_PATH=/tmp/some-existing-dir pytest
+```
+
+Tests create temporary vaults for isolation and don't require a running Obsidian instance. The suite is 34 files, flat (no subdirectories), one file per feature area, 413 test functions total, plus a `conftest.py` holding one autouse fixture that resets environment variables and the vault singleton between tests.
+
+**CI:** GitHub Actions runs the suite across Python 3.10/3.11/3.12 via `uv sync --extra dev` + `uv run pytest -q`, plus an advisory (non-blocking) `ruff`/`pyright` pass scoped to files changed in the PR.
+
+### Testing with MCP Inspector
+
+1. **Set your vault path:**
+   ```bash
+   export OBSIDIAN_VAULT_PATH="/path/to/your/vault"
+   ```
+
+2. **Run the MCP Inspector:**
+   ```bash
+   npx @modelcontextprotocol/inspector python -m obsidian_mcp.server
+   ```
+
+3. **Open the Inspector UI** at `http://localhost:5173`
+
+4. **Test the tools** interactively with your actual vault
+
+## Publishing (for maintainers)
+
+This fork does not currently publish to PyPI — the package name `obsidian-mcp` is already owned by [upstream](https://github.com/natestrong/obsidian-mcp) there, so this fork can't publish under it. Installation is git-only; see [Installation](#installation) above.
+
+The build/publish steps below are kept for reference only, in case this fork is ever published under its own package name:
+
+```bash
+# 1. Update version in pyproject.toml
+# 2. Clean old builds
+rm -rf dist/ build/ *.egg-info/
+
+# 3. Build the package
+python -m build
+
+# 4. Check the package
+twine check dist/*
+
+# 5. Upload to PyPI
+twine upload dist/* -u __token__ -p $PYPI_API_KEY
+
+# 6. Create and push git tag
+git tag -a vX.Y.Z -m "Release version X.Y.Z"
+git push origin vX.Y.Z
+```
 
 ## Changelog
 
@@ -1422,90 +1666,6 @@ Use 'created' to find notes by creation date, 'modified' for last edit date
 ### v1.1.1 (2025-01-06)
 - Initial PyPI release
 
-## Publishing (for maintainers)
-
-This fork does not currently publish to PyPI — the package name `obsidian-mcp` is already owned by [upstream](https://github.com/natestrong/obsidian-mcp) there, so this fork can't publish under it. Installation is git-only; see [Installation](#installation) above.
-
-The build/publish steps below are kept for reference only, in case this fork is ever published under its own package name:
-
-```bash
-# 1. Update version in pyproject.toml
-# 2. Clean old builds
-rm -rf dist/ build/ *.egg-info/
-
-# 3. Build the package
-python -m build
-
-# 4. Check the package
-twine check dist/*
-
-# 5. Upload to PyPI
-twine upload dist/* -u __token__ -p $PYPI_API_KEY
-
-# 6. Create and push git tag
-git tag -a vX.Y.Z -m "Release version X.Y.Z"
-git push origin vX.Y.Z
-```
-
-## Configuration
-
-### Performance and Indexing
-
-The server now includes a **persistent search index** using SQLite for dramatically improved performance:
-
-#### Key Features:
-- **Instant startup** - No need to rebuild index on every server start
-- **Incremental updates** - Only re-indexes files that have changed
-- **60x faster searches** - SQLite queries are much faster than scanning all files
-- **Lower memory usage** - Files are loaded on-demand rather than all at once
-
-#### Configuration Options:
-
-All behavior is controlled via `OBSIDIAN_*` environment variables:
-
-| Variable | Controls | Default | Valid values |
-|---|---|---|---|
-| `OBSIDIAN_VAULT_PATH` | Path to the vault (required) | *(none — required)* | any existing directory |
-| `OBSIDIAN_LOG_LEVEL` | Server log verbosity | `INFO` | `DEBUG\|INFO\|WARNING\|ERROR\|CRITICAL` |
-| `OBSIDIAN_FOLDER_TEMPLATES` | Per-folder note templates | unset (off) | JSON array, e.g. `[{"folder":"01-projects","template":"templates/project.md"}]` |
-| `OBSIDIAN_REQUIRE_FRONTMATTER` | Require `name`+`description` frontmatter on full-content writes | `true` | boolean |
-| `OBSIDIAN_WIKILINK_POLICY` | How broken `[[wikilinks]]` are handled on write | `warn` | `strict\|warn\|off` |
-| `OBSIDIAN_NOTE_SIZE_POLICY` | How exceeding the line-count ceiling is handled | `warn` | `strict\|warn\|off` |
-| `OBSIDIAN_MAX_NOTE_LINES` | Line-count ceiling per note | `500` | integer |
-| `OBSIDIAN_APPEND_HEADROOM_LINES` | Safety margin subtracted from the ceiling for incremental writes | `100` | integer |
-| `OBSIDIAN_TAG_STYLE` | Kebab-normalize frontmatter tags on write | `as-is` | `kebab\|as-is` |
-| `OBSIDIAN_SLUG_STYLE` | Kebab-slugify filenames on write | `as-is` | `kebab\|as-is` |
-| `OBSIDIAN_DAILY_DIR` | Folder for daily notes (`add_daily_note`) | `daily` | vault-relative/absolute/`~` path |
-| `OBSIDIAN_SEARCH_RESULT_MODE` | Default result shape for search tools | `auto` | `content\|index\|auto` |
-| `OBSIDIAN_SEARCH_INDEX_THRESHOLD` | Result count where `auto` mode switches to `index` shape | `10` | integer |
-| `OBSIDIAN_AUTO_INDEX_UPDATE` | Whether the SQLite search index refreshes automatically | `true` | boolean |
-| `OBSIDIAN_INDEX_UPDATE_INTERVAL` | Seconds between background index refreshes | `300` | integer |
-| `OBSIDIAN_INDEX_BATCH_SIZE` | Files re-indexed per batch during a refresh | `50` | integer |
-| `OBSIDIAN_CACHE_STAT_TTL_SECONDS` | Max age of the in-memory stat cache before re-checking disk | `30` | integer (`0` = always re-check) |
-
-Booleans accept `true/1/yes/on` (case-insensitive) as truthy, anything else as false.
-
-The `help` MCP tool returns this same catalog live, including each variable's current effective value, from inside a running session.
-
-The search index is stored in your vault at `.obsidian/mcp-search-index.db`.
-
-### Performance Notes
-
-- **Search indexing** - With persistent index, only changed files are re-indexed
-- **Concurrent operations** - File operations use async I/O for better performance
-- **Large vaults** - Incremental indexing makes large vaults (10,000+ notes) usable
-- **Image handling** - Images are automatically resized to prevent memory issues
-
-### Migration from REST API Version
-
-If you were using a previous version that required the Local REST API plugin:
-
-1. **You no longer need the Obsidian Local REST API plugin** - This server now uses direct filesystem access
-2. Replace `OBSIDIAN_REST_API_KEY` with `OBSIDIAN_VAULT_PATH` in your configuration
-3. Remove any `OBSIDIAN_API_URL` settings
-4. The new version is significantly faster and more reliable
-5. All features work offline without requiring Obsidian to be running
-
 ## Contributing
 
 1. Fork the repository
@@ -1522,6 +1682,7 @@ MIT License - see LICENSE file for details
 
 ## Acknowledgments
 
+- [Leandro Silva Ferreira](https://github.com/leandrosilvaferreira) for maintaining and evolving this [Swapo-Finance fork](https://github.com/Swapo-Finance/obsidian-mcp) — daily notes, per-folder templates, write policies, config introspection, and token-efficient search
 - [Nate Strong](https://github.com/natestrong) for creating [obsidian-mcp](https://github.com/natestrong/obsidian-mcp), the upstream project this fork builds on
 - [Anthropic](https://anthropic.com) for creating the Model Context Protocol
 - [Obsidian](https://obsidian.md) team for the amazing note-taking app
