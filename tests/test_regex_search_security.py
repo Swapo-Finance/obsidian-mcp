@@ -26,7 +26,9 @@ Covers two pre-existing findings fixed together:
 """
 
 import asyncio
+import os
 import time
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -35,6 +37,19 @@ from obsidian_mcp.tools.search_regex import search_by_regex
 from obsidian_mcp.utils import persistent_index as persistent_index_module
 from obsidian_mcp.utils.index_text import extract_literal_prefix
 from obsidian_mcp.utils.persistent_index import PersistentSearchIndex
+
+
+def _block_until_killed(marker_dir: str) -> None:
+    """Worker body for test_pool_teardown_kills_busy_workers.
+
+    Touches a marker so the test can wait for proof that this process really
+    is executing (not merely spawned, not merely queued), then blocks long
+    enough that only an explicit kill can end it. Module-level because the
+    pool uses the "spawn" start method, which pickles the callable by
+    qualified name.
+    """
+    Path(marker_dir, f"{os.getpid()}.started").touch()
+    time.sleep(300)
 
 
 @pytest_asyncio.fixture
@@ -57,9 +72,8 @@ class TestRegexTimeoutProtection:
     ):
         # Shrink the per-file timeout: what's under test is "a bound is
         # enforced", not the specific production value of the bound. This
-        # keeps the test fast and keeps the orphaned worker's background
-        # runtime (it can't be force-killed -- see REGEX_MATCH_TIMEOUT_SECONDS)
-        # short too.
+        # keeps the test fast; the worker abandoned by the timeout is killed
+        # by the fixture's close() (see _shutdown_regex_pool).
         monkeypatch.setattr(persistent_index_module, "REGEX_MATCH_TIMEOUT_SECONDS", 0.2)
 
         # Classic (a+)+$ trigger: a run of 'a' long enough to blow up
@@ -175,6 +189,61 @@ class TestRegexTimeoutProtection:
         assert results[0]["filepath"] == "ordinary.md"
         assert test_index._regex_process_pool is not None
         assert test_index._regex_process_pool is not pool_before
+
+    @pytest.mark.asyncio
+    async def test_pool_teardown_kills_busy_workers(self, test_index, tmp_path):
+        """A busy worker must not survive the pool that owned it.
+
+        shutdown(wait=False, cancel_futures=True) leaves a worker that is
+        mid-task running: it never reaches the point where it would read the
+        shutdown sentinel. Because this server is long-lived, that used to
+        strand _REGEX_POOL_MAX_WORKERS processes on every recycle -- observed
+        as 266 orphans holding ~4 GB of RSS. _shutdown_regex_pool must kill
+        them outright.
+
+        Uses a sleeping worker rather than a pathological regex: same
+        "occupied and unreachable by the sentinel" state, but deterministic
+        and free of CPU burn, so a regression fails on the assertion instead
+        of on how fast the machine happens to backtrack.
+        """
+        marker_dir = tmp_path / "workers"
+        marker_dir.mkdir()
+        workers = persistent_index_module._REGEX_POOL_MAX_WORKERS
+        pool = test_index._get_regex_process_pool()
+        for _ in range(workers):
+            pool.submit(_block_until_killed, str(marker_dir))
+
+        # Every worker must be inside _block_until_killed before teardown --
+        # tearing down a pool whose workers are still idle would pass even
+        # against the unfixed code, since shutdown() does reach an idle
+        # worker.
+        deadline = time.monotonic() + 30.0
+        while len(list(marker_dir.glob("*.started"))) < workers:
+            assert time.monotonic() < deadline, "workers never started"
+            await asyncio.sleep(0.05)
+
+        processes = list(pool._processes.values())
+        assert len(processes) == workers
+
+        try:
+            test_index._shutdown_regex_pool()
+
+            # Pre-fix these would still be sleeping out their full 300s.
+            deadline = time.monotonic() + 10.0
+            while any(process.is_alive() for process in processes):
+                alive = [p.pid for p in processes if p.is_alive()]
+                assert time.monotonic() < deadline, (
+                    f"pool teardown left workers alive: {alive}"
+                )
+                await asyncio.sleep(0.05)
+        finally:
+            # Never leak a 300s sleeper into the rest of the suite if the
+            # assertion above fails.
+            for process in processes:
+                if process.is_alive():
+                    process.kill()
+
+        assert test_index._regex_process_pool is None
 
 
 class TestFts5LiteralPrefixEscaping:

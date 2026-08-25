@@ -29,10 +29,10 @@ logger = logging.getLogger(__name__)
 # ThreadPoolExecutor timeout would free nothing -- verified empirically, a
 # catastrophic-backtracking match froze an asyncio event loop for its full
 # duration even when dispatched to a thread via loop.run_in_executor. A
-# separate process has its own GIL, so the parent stays responsive; the
-# timed-out worker keeps running in the background (it can't be force-killed
-# without depending on ProcessPoolExecutor's private internals -- see
-# close()) until it naturally finishes or the server process exits.
+# separate process has its own GIL, so the parent stays responsive. The
+# timed-out worker is abandoned by the caller and only actually dies when
+# the pool it belongs to is torn down -- see _shutdown_regex_pool, which
+# force-kills it rather than leaving it to finish on its own.
 REGEX_MATCH_TIMEOUT_SECONDS = 5.0
 # ponytail: fixed size, not configurable. Add an OBSIDIAN_* knob in
 # vault_config.py if a deployment ever needs to tune it.
@@ -169,14 +169,7 @@ class PersistentSearchIndex:
         if self.db:
             await self.db.close()
             self.db = None
-        if self._regex_process_pool is not None:
-            # wait=False: closing the index must never block on a worker
-            # still spinning through a pathological pattern (see
-            # REGEX_MATCH_TIMEOUT_SECONDS above). The process is left running
-            # in the background rather than force-killed -- same accepted
-            # trade-off as the timeout itself.
-            self._regex_process_pool.shutdown(wait=False, cancel_futures=True)
-            self._regex_process_pool = None
+        self._shutdown_regex_pool()
 
     def _get_regex_process_pool(self) -> ProcessPoolExecutor:
         """Lazily create the process pool that runs regex matching outside
@@ -194,17 +187,52 @@ class PersistentSearchIndex:
             )
         return self._regex_process_pool
 
+    def _shutdown_regex_pool(self) -> None:
+        """Tear down the regex process pool without leaking its workers.
+
+        shutdown(wait=False, cancel_futures=True) alone does not end a
+        wedged worker: a process mid-catastrophic-backtrack never reaches
+        the point where it would read the shutdown sentinel off the call
+        queue, so it survives the executor that owned it. In a short-lived
+        CLI that is harmless -- the process exits soon anyway. This server
+        is long-lived, so every recycle stranded _REGEX_POOL_MAX_WORKERS
+        processes permanently; observed in practice as 266 orphaned workers
+        holding ~4 GB of RSS and pinning the machine's load average, all
+        parented to a single obsidian-mcp instance.
+
+        So: shutdown first (releases the executor's own threads and drops
+        anything still queued), then SIGKILL whatever is still alive.
+        wait=False is still required -- teardown must never block on a
+        pathological match -- which is exactly why the kill has to be
+        explicit. SIGKILL rather than terminate() because a wedged worker
+        is inside CPython's re engine holding the GIL, and a Python-level
+        signal handler only runs between bytecodes.
+
+        No caller is waiting on these workers: search_regex abandons the
+        future via asyncio.wait_for before either caller of this method
+        runs, so the resulting BrokenProcessPool has nowhere to surface.
+        """
+        pool = self._regex_process_pool
+        if pool is None:
+            return
+        # Snapshot the workers before shutdown, not after: shutdown() nulls
+        # _processes out once it has joined everything it could reach, which
+        # would hide exactly the workers this method exists to kill.
+        # _processes is private, but ProcessPoolExecutor exposes no public
+        # handle on its workers -- and reaching them is the whole point.
+        # Stable dict[int, Process] since 3.7; getattr keeps a future rename
+        # from turning teardown into an AttributeError.
+        processes = list((getattr(pool, "_processes", None) or {}).values())
+        pool.shutdown(wait=False, cancel_futures=True)
+        for process in processes:
+            if process.is_alive():
+                process.kill()
+        self._regex_process_pool = None
+
     def _recycle_regex_process_pool(self) -> None:
         """Discard the current regex process pool so the next call lazily
         creates a fresh one -- see _REGEX_POOL_RECYCLE_THRESHOLD for when
         this fires.
-
-        Same shutdown as close(): wait=False so this never blocks on a
-        worker mid-pathological-match, cancel_futures=True to drop anything
-        still queued (should be empty in practice now that search_regex
-        caps a batch at _REGEX_POOL_MAX_WORKERS). The abandoned workers keep
-        running until they naturally finish or the server process exits --
-        same accepted trade-off as everywhere else in this module.
         """
         if self._regex_process_pool is not None:
             logger.warning(
@@ -212,8 +240,7 @@ class PersistentSearchIndex:
                 f"{self._consecutive_regex_timeouts} consecutive per-file "
                 "timeouts -- assuming the worker pool is wedged"
             )
-            self._regex_process_pool.shutdown(wait=False, cancel_futures=True)
-            self._regex_process_pool = None
+            self._shutdown_regex_pool()
         self._consecutive_regex_timeouts = 0
 
     def _require_db(self) -> aiosqlite.Connection:
