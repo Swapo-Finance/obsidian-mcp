@@ -11,7 +11,7 @@ import os
 
 from fastmcp import FastMCP
 
-from .utils.filesystem import init_vault
+from .utils.filesystem import get_vault, init_vault
 
 # Configure logging
 logging.basicConfig(
@@ -35,4 +35,10 @@ mcp = FastMCP(
 
 def main():
     """Entry point for packaged distribution."""
-    mcp.run()
+    try:
+        mcp.run()
+    finally:
+        # None until the first search initializes the index (any vault size).
+        index = get_vault().persistent_index
+        if index is not None:
+            index.kill_regex_pool()
