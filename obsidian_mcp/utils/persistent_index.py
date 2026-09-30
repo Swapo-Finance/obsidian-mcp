@@ -4,8 +4,13 @@ import asyncio
 import json
 import logging
 import multiprocessing
+import os
+import signal
+import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -30,24 +35,108 @@ logger = logging.getLogger(__name__)
 # catastrophic-backtracking match froze an asyncio event loop for its full
 # duration even when dispatched to a thread via loop.run_in_executor. A
 # separate process has its own GIL, so the parent stays responsive. The
-# timed-out worker is abandoned by the caller and only actually dies when
-# the pool it belongs to is torn down -- see _shutdown_regex_pool, which
-# force-kills it rather than leaving it to finish on its own.
+# timed-out worker is abandoned by the caller. On POSIX it ends itself at
+# twice this timeout (_match_with_backstop), which breaks the pool (see
+# _match_in_regex_pool); otherwise it only dies when the pool it belongs to
+# is torn down -- see _shutdown_regex_pool, which force-kills it rather
+# than leaving it to finish on its own.
 REGEX_MATCH_TIMEOUT_SECONDS = 5.0
 # ponytail: fixed size, not configurable. Add an OBSIDIAN_* knob in
 # vault_config.py if a deployment ever needs to tune it.
 _REGEX_POOL_MAX_WORKERS = 4
 # Recycle the process pool after this many consecutive per-file timeouts.
-# ProcessPoolExecutor only replaces a worker on crash, never on
-# "permanently busy" (see REGEX_MATCH_TIMEOUT_SECONDS above), so enough
-# pathological patterns in a row can wedge every worker forever -- every
-# later regex search would then silently degrade to an empty result for
-# the rest of the process's life. This many consecutive timeouts is a
-# crude but cheap proxy for "the whole pool is probably stuck": a false
-# positive (legitimately slow, non-malicious files) just costs a wasted
-# pool respawn; a false negative costs a few more timeout-empty-result
-# searches before the next check trips it.
+# ProcessPoolExecutor never replaces a busy worker, and a crashed one
+# breaks the whole pool (see _match_in_regex_pool), so enough pathological
+# patterns in a row can wedge every worker -- every later regex search
+# would then silently degrade to an empty result for the rest of the
+# process's life. On POSIX, _match_with_backstop ends a wedged worker at
+# twice the timeout and _match_in_regex_pool recycles the broken pool;
+# this threshold stays the only remedy where that timer cannot fire
+# (Windows). This many consecutive timeouts is a crude but cheap proxy for
+# "the whole pool is probably stuck": a false positive (legitimately slow,
+# non-malicious files) just costs a wasted pool respawn; a false negative
+# costs a few more timeout-empty-result searches before the next check
+# trips it.
 _REGEX_POOL_RECYCLE_THRESHOLD = _REGEX_POOL_MAX_WORKERS
+# A worker is killed by a kernel timer this many times
+# REGEX_MATCH_TIMEOUT_SECONDS after it starts a match -- see
+# _match_with_backstop.
+_REGEX_BACKSTOP_FACTOR = 2
+
+
+def _exit_when_parent_dies() -> None:
+    """Pool-worker initializer: make the worker exit once the server is gone.
+
+    Every spawned worker holds BOTH ends of the pool's call-queue pipe, so
+    when the server dies abruptly (SIGKILL, or SIGTERM with the default
+    disposition: no Python cleanup runs) a worker never sees EOF and stays
+    blocked in call_queue.get() forever -- and the multiprocessing resource
+    tracker lives on with it, which holds one of its fds. Cleanup in the
+    server can never cover that, so each worker watches for the death
+    itself: a daemon thread blocks on multiprocessing's parent sentinel (the
+    worker's own read end of a pipe whose only write end the server holds on
+    POSIX; the server's process handle on Windows), which becomes ready as
+    soon as the server exits -- or at once if it is already dead by the time
+    this runs. Polling getppid() instead would never fire on Windows, where
+    a dead parent is not replaced.
+
+    A worker stuck inside `re` holds the GIL, which starves this thread --
+    that case is covered, on POSIX only, by _match_with_backstop.
+
+    Module-level (spawn pickles callables by qualified name) and trivially
+    safe on purpose: an initializer that raises marks the whole pool broken.
+    """
+    parent = multiprocessing.parent_process()
+    if parent is None:  # not started by multiprocessing: nothing to watch
+        return
+
+    def watch() -> None:
+        parent.join()
+        os._exit(0)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def _match_with_backstop(
+    backstop_seconds: float,
+    worker: Callable[..., list[dict[str, Any]]],
+    *args: Any,
+) -> list[dict[str, Any]]:
+    """Run worker(*args) in a pool worker under a kernel-enforced deadline.
+
+    _exit_when_parent_dies cannot help a worker stuck inside `re`: the match
+    holds the GIL, so its watchdog thread never runs and, should the server
+    die meanwhile, the worker keeps burning CPU until the pathological match
+    ends (hours, for a bad pattern). An ITIMER_REAL timer needs no GIL. No
+    SIGALRM handler is installed on purpose: with the default disposition
+    the kernel terminates the process whatever it is executing, needing
+    neither the GIL, nor the eval loop, nor any signal polling by the code
+    being run, so it also covers C code that never polls. That assumes
+    SIGALRM is not inherited as ignored (ignored dispositions survive
+    exec/spawn); if it were, the backstop silently degrades to no backstop.
+
+    This runs in the worker, NOT in the server: _process_file_regex is a
+    coroutine in the server, where arming the timer would kill the server.
+    The caller passes backstop_seconds in because a spawned worker re-imports
+    this module, so a constant patched in the server is not visible here.
+
+    The caller abandons the future at REGEX_MATCH_TIMEOUT_SECONDS already, so
+    nothing is lost when this kills the worker later. The executor then
+    marks the whole pool broken -- see _match_in_regex_pool.
+
+    POSIX only: Windows has no setitimer, so there the backstop is skipped
+    and a worker wedged inside `re` when the server dies survives. Upgrade
+    path if that ever matters: run the pool's workers in a Job Object with
+    KILL_ON_JOB_CLOSE.
+    """
+    try:
+        # Armed inside the try so that the finally always disarms.
+        if hasattr(signal, "setitimer"):
+            signal.setitimer(signal.ITIMER_REAL, backstop_seconds)
+        return worker(*args)
+    finally:
+        if hasattr(signal, "setitimer"):
+            signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 class PersistentSearchIndex:
@@ -171,6 +260,17 @@ class PersistentSearchIndex:
             self.db = None
         self._shutdown_regex_pool()
 
+    def kill_regex_pool(self) -> None:
+        """Kill the regex pool's workers, synchronously, for the exit path.
+
+        close() is async and nothing calls it when the server exits. Without
+        an explicit kill, concurrent.futures' interpreter-exit hook joins the
+        workers and blocks on a busy one. On POSIX that wait is bounded by
+        the backstop (about twice the timeout), which covers whatever a pool
+        task is executing; only on Windows is it unbounded.
+        """
+        self._shutdown_regex_pool()
+
     def _get_regex_process_pool(self) -> ProcessPoolExecutor:
         """Lazily create the process pool that runs regex matching outside
         the event loop's own process (see REGEX_MATCH_TIMEOUT_SECONDS above).
@@ -184,6 +284,7 @@ class PersistentSearchIndex:
             self._regex_process_pool = ProcessPoolExecutor(
                 max_workers=_REGEX_POOL_MAX_WORKERS,
                 mp_context=multiprocessing.get_context("spawn"),
+                initializer=_exit_when_parent_dies,
             )
         return self._regex_process_pool
 
@@ -208,9 +309,10 @@ class PersistentSearchIndex:
         is inside CPython's re engine holding the GIL, and a Python-level
         signal handler only runs between bytecodes.
 
-        No caller is waiting on these workers: search_regex abandons the
-        future via asyncio.wait_for before either caller of this method
-        runs, so the resulting BrokenProcessPool has nowhere to surface.
+        Futures still running on the discarded pool fail with
+        BrokenProcessPool. Ones abandoned by a timeout have nowhere to
+        surface it; _match_in_regex_pool retries one that is still awaited,
+        once, on a fresh pool.
         """
         pool = self._regex_process_pool
         if pool is None:
@@ -229,17 +331,19 @@ class PersistentSearchIndex:
                 process.kill()
         self._regex_process_pool = None
 
-    def _recycle_regex_process_pool(self) -> None:
+    def _recycle_regex_process_pool(self, reason: str | None = None) -> None:
         """Discard the current regex process pool so the next call lazily
         creates a fresh one -- see _REGEX_POOL_RECYCLE_THRESHOLD for when
-        this fires.
+        this fires. `reason` replaces the default consecutive-timeouts
+        explanation in the log for a recycle with another cause.
         """
         if self._regex_process_pool is not None:
-            logger.warning(
-                "Recycling regex process pool after "
-                f"{self._consecutive_regex_timeouts} consecutive per-file "
-                "timeouts -- assuming the worker pool is wedged"
-            )
+            if reason is None:
+                reason = (
+                    f"{self._consecutive_regex_timeouts} consecutive per-file "
+                    "timeouts -- assuming the worker pool is wedged"
+                )
+            logger.warning(f"Recycling regex process pool after {reason}")
             self._shutdown_regex_pool()
         self._consecutive_regex_timeouts = 0
 
@@ -631,6 +735,49 @@ class PersistentSearchIndex:
 
         return results[:limit]
 
+    async def _match_in_regex_pool(
+        self,
+        worker: Callable[..., list[dict[str, Any]]],
+        *args: Any,
+    ) -> list[dict[str, Any]]:
+        """Run worker(*args) in the regex process pool under the per-file
+        timeout, retrying ONCE on a fresh pool if the current one is broken.
+
+        When any worker dies -- the self-kill of _match_with_backstop, or a
+        crash -- the executor terminates all the others and stays broken for
+        good: in-flight futures raise BrokenProcessPool and so does every
+        later submit. Nothing else ever replaces such a pool, so without
+        this every later regex search would silently return nothing. The
+        retry is what lets the very next search work: without it, the task
+        whose submit hits the broken pool (and every task in flight when it
+        broke, up to 4) would lose its file. A second BrokenProcessPool
+        propagates.
+        """
+        loop = asyncio.get_running_loop()
+        retried = False
+        while True:
+            pool = self._get_regex_process_pool()
+            try:
+                return await asyncio.wait_for(
+                    loop.run_in_executor(
+                        pool,
+                        _match_with_backstop,
+                        _REGEX_BACKSTOP_FACTOR * REGEX_MATCH_TIMEOUT_SECONDS,
+                        worker,
+                        *args,
+                    ),
+                    timeout=REGEX_MATCH_TIMEOUT_SECONDS,
+                )
+            except BrokenProcessPool:
+                # A batch runs several of these concurrently on one pool, so
+                # every one of them gets this exception: only the first may
+                # recycle, or a late one would kill the healthy replacement.
+                if pool is self._regex_process_pool:
+                    self._recycle_regex_process_pool(reason="a worker process died")
+                if retried:
+                    raise
+                retried = True
+
     async def _process_file_regex(
         self,
         filepath: str,
@@ -645,8 +792,9 @@ class PersistentSearchIndex:
 
         The actual match runs in a worker process (REGEX_MATCH_TIMEOUT_SECONDS
         above explains why a process rather than a thread), so a pathological
-        pattern can never block the caller past the timeout, no matter how
-        long the match itself keeps running.
+        pattern can never block the caller past the timeout of one attempt,
+        no matter how long the match itself keeps running. A file gets at
+        most two attempts (see _match_in_regex_pool).
         """
         # Parse line offsets if available
         try:
@@ -666,20 +814,9 @@ class PersistentSearchIndex:
         worker = (
             search_large_file_content if size > 1024 * 1024 else search_file_content
         )
-        loop = asyncio.get_running_loop()
-        pool = self._get_regex_process_pool()
         try:
-            match_contexts = await asyncio.wait_for(
-                loop.run_in_executor(
-                    pool,
-                    worker,
-                    content,
-                    regex,
-                    line_offsets,
-                    context_length,
-                    max_matches,
-                ),
-                timeout=REGEX_MATCH_TIMEOUT_SECONDS,
+            match_contexts = await self._match_in_regex_pool(
+                worker, content, regex, line_offsets, context_length, max_matches
             )
         except asyncio.TimeoutError:
             logger.warning(
@@ -695,6 +832,13 @@ class PersistentSearchIndex:
             self._consecutive_regex_timeouts += 1
             if self._consecutive_regex_timeouts >= _REGEX_POOL_RECYCLE_THRESHOLD:
                 self._recycle_regex_process_pool()
+        except BrokenProcessPool:
+            logger.warning(
+                f"Regex match on {filepath!r} failed: its worker process "
+                "died on two consecutive attempts -- skipping this file's "
+                "results"
+            )
+            match_contexts = []
         else:
             self._consecutive_regex_timeouts = 0
 
