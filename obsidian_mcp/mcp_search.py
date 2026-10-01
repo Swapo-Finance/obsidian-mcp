@@ -269,10 +269,14 @@ async def sync_vault_index_tool(
     Force the search index and notes cache to match the vault files on disk now.
 
     This server's own write tools keep the index current automatically. Files
-    changed any other way are picked up by the server's periodic re-check
-    (every OBSIDIAN_INDEX_UPDATE_INTERVAL seconds, default 300); until then
-    search_notes, search_by_regex, and search_by_property can miss new notes,
-    return deleted ones, or show old content.
+    changed any other way are picked up by a lazy re-check, not a background
+    one: it runs just before the next search_notes, search_by_regex, or
+    search_by_property call once OBSIDIAN_INDEX_UPDATE_INTERVAL seconds
+    (default 300) have passed, and never when OBSIDIAN_AUTO_INDEX_UPDATE=false.
+    Tag, link, and note-name results re-check within
+    OBSIDIAN_CACHE_STAT_TTL_SECONDS (default 30). Until a re-check runs,
+    searches can miss new notes, return deleted ones, or show old content.
+    Wait for this tool's result before the next search.
 
     When to use:
     - Right after vault files changed WITHOUT this server's tools: your own

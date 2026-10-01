@@ -75,11 +75,9 @@ class TestPersistentIndex:
         await index.close()
 
     @pytest.mark.asyncio
-    async def test_get_file_stats_returns_stored_mtime_and_size(self, test_vault_dir):
+    async def test_get_file_stats_returns_stored_mtime_and_size(self, index):
         """One query returns (mtime, size) for every indexed file -- what
         ObsidianVault's reconcile pass diffs against the disk."""
-        index = PersistentSearchIndex(Path(test_vault_dir))
-        await index.initialize()
         assert await index.get_file_stats() == {}
 
         await index.index_file("a.md", "Content A", 1000.0, 10)
@@ -93,7 +91,22 @@ class TestPersistentIndex:
         await index.remove_file("a.md")
         assert await index.get_file_stats() == {"dir/b.md": (2000.5, 20)}
 
-        await index.close()
+    @pytest.mark.asyncio
+    async def test_invalidate_all_forgets_every_mtime_but_keeps_the_rows(self, index):
+        """What a full re-index starts from: every note then differs from its
+        disk stamp, so the pass re-indexes all of them -- and a pass that dies
+        midway leaves the rest marked, not looking up to date."""
+        await index.index_file("a.md", "Content A", 1000.0, 10)
+        await index.index_file("dir/b.md", "Content B", 2000.5, 20)
+
+        await index.invalidate_all()
+
+        assert await index.get_file_stats() == {
+            "a.md": (-1.0, 10),
+            "dir/b.md": (-1.0, 20),
+        }
+        found = await index.search_simple("content", 10)
+        assert found["total_count"] == 2  # the rows themselves are untouched
 
     @pytest.mark.asyncio
     async def test_search_functionality(self, test_vault_dir):
@@ -294,6 +307,31 @@ class TestPersistentIndex:
         stored = await index.get_file_stats()
         assert "orphan_a.md" in stored
         assert "orphan_b.md" in stored
+
+    @pytest.mark.asyncio
+    @ROLLS_BACK_ON
+    async def test_invalidate_all_rolls_back_on_failure(
+        self, index, monkeypatch, failure
+    ):
+        """Same rollback guarantee for invalidate_all(): a failure at the
+        commit must not leave the UPDATE pending for a later, unrelated
+        commit to fold in."""
+        await index.index_file("note.md", "content", 1000.0, 10)
+        db = index._require_db()
+
+        async def failing_commit():
+            raise failure("simulated failure")
+
+        monkeypatch.setattr(db, "commit", failing_commit)
+        with pytest.raises(failure):
+            await index.invalidate_all()
+        monkeypatch.undo()
+
+        await index.index_file("other.md", "other content", 2000.0, 20)
+
+        assert (await index.get_file_stats())["note.md"] == (1000.0, 10), (
+            "the invalidation leaked through despite the error"
+        )
 
 
 if __name__ == "__main__":

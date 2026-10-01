@@ -68,21 +68,59 @@ class TestSyncVaultIndexTool:
             await sync_vault_index_tool.fn()
 
 
+def _instructions(
+    vault, monkeypatch, *, auto: bool, interval: int = 300, ttl: int = 30
+) -> str:
+    """The server instructions for one explicit configuration: every input is
+    pinned, so no OBSIDIAN_* value in the environment changes the text."""
+    monkeypatch.setattr(vault, "_auto_index_update", auto)
+    monkeypatch.setattr(vault, "_index_update_interval", interval)
+    monkeypatch.setattr(vault, "cache_stat_ttl_seconds", ttl)
+    return _build_instructions(vault)
+
+
 class TestServerInstructions:
     def test_registered_instructions_name_the_sync_tool(self):
         assert "sync_vault_index_tool" in (mcp.instructions or "")
 
     @pytest.mark.asyncio
     async def test_automatic_mode_states_the_recheck_interval(self, vault, monkeypatch):
-        monkeypatch.setattr(vault, "_auto_index_update", True)
-
-        text = _build_instructions(vault)
+        text = _instructions(vault, monkeypatch, auto=True)
 
         assert "at most every 300 seconds" in text
-        assert "call sync_vault_index_tool" in text
+        assert "call sync_vault_index_tool once and wait for its result" in text
 
     @pytest.mark.asyncio
-    async def test_manual_mode_makes_the_call_mandatory(self, vault, monkeypatch):
-        monkeypatch.setattr(vault, "_auto_index_update", False)
+    @pytest.mark.parametrize(
+        ("interval", "ttl", "expected"),
+        [
+            (10, 45, "at most every 45 seconds"),  # the slower of the two rechecks
+            (0, 0, "before every query"),
+        ],
+    )
+    async def test_automatic_mode_bound_is_the_slower_recheck(
+        self, vault, monkeypatch, interval, ttl, expected
+    ):
+        text = _instructions(vault, monkeypatch, auto=True, interval=interval, ttl=ttl)
 
-        assert "you MUST call sync_vault_index_tool" in _build_instructions(vault)
+        assert expected in text
+        assert "at most every 0 seconds" not in text
+
+    @pytest.mark.asyncio
+    async def test_manual_mode_makes_the_call_mandatory_for_search_only(
+        self, vault, monkeypatch
+    ):
+        text = _instructions(vault, monkeypatch, auto=False)
+
+        assert "you MUST call sync_vault_index_tool" in text
+        assert "text, regex, or property search results" in text
+        assert "within 30 seconds" in text  # tag, link, and name results
+
+    @pytest.mark.asyncio
+    async def test_manual_mode_with_no_cache_ttl_rechecks_before_every_query(
+        self, vault, monkeypatch
+    ):
+        text = _instructions(vault, monkeypatch, auto=False, ttl=0)
+
+        assert "before every query" in text
+        assert "within 0 seconds" not in text

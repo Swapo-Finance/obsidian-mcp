@@ -514,6 +514,25 @@ class PersistentSearchIndex:
                 await db.rollback()
                 raise
 
+    async def invalidate_all(self) -> None:
+        """Forget every file's stored mtime, keeping its row and content.
+
+        The start of a full re-index: afterwards every file differs from its
+        disk stamp, so an ordinary diff pass re-indexes all of them -- and one
+        that dies midway leaves the files it did not reach marked stale,
+        where a pass that merely ignored the stamps would leave them looking
+        up to date. The -1 stamp (a second before the epoch) matches no real
+        file in practice.
+        """
+        db = self._require_db()
+        async with self._lock:
+            try:
+                await db.execute("UPDATE file_index SET mtime = -1")
+                await db.commit()
+            except BaseException:  # incl. CancelledError, see index_file
+                await db.rollback()
+                raise
+
     async def search_content(
         self, query: str, limit: int = 50
     ) -> list[tuple[str, str]]:

@@ -61,10 +61,11 @@ class ObsidianVault:
         # time.monotonic() at the end of the last reconcile pass; None until
         # the first pass.
         self._index_timestamp: float | None = None
-        # True while write-through may have left the index behind the disk (it
-        # failed, was cancelled, or could not key the note as the disk lists
-        # it): the next query reconciles, even in manual mode. A pass clears
-        # it when it starts, see _update_persistent_index.
+        # True while the index may be behind the disk: a write was interrupted,
+        # its write-through failed, found a pass holding _index_lock, or could
+        # not key the note as the disk lists it, or a pass did not finish. The
+        # next query reconciles, even in manual mode. A pass clears it when it
+        # starts, see _update_persistent_index.
         self._index_dirty = False
         self._index_lock = asyncio.Lock()
 
@@ -78,7 +79,10 @@ class ObsidianVault:
         self._index_update_interval = int(
             os.getenv("OBSIDIAN_INDEX_UPDATE_INTERVAL", "300")
         )  # 5 minutes default
-        self._index_batch_size = int(os.getenv("OBSIDIAN_INDEX_BATCH_SIZE", "50"))
+        # At least 1: a zero step makes range() raise, which would break every pass.
+        self._index_batch_size = max(
+            1, int(os.getenv("OBSIDIAN_INDEX_BATCH_SIZE", "50"))
+        )
         self._auto_index_update = os.getenv(
             "OBSIDIAN_AUTO_INDEX_UPDATE", "true"
         ).lower() in ("true", "1", "yes", "on")
@@ -400,20 +404,26 @@ class ObsidianVault:
         # Create parent directories if needed
         full_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write content asynchronously
-        async with aiofiles.open(full_path, "w", encoding="utf-8") as f:
-            await f.write(content)
+        # From the disk write on, however this ends (an error, a client
+        # interrupt), the index may lag the disk: flag it for the next query.
+        try:
+            # Write content asynchronously
+            async with aiofiles.open(full_path, "w", encoding="utf-8") as f:
+                await f.write(content)
 
-        # Return the newly created note
-        note = await self.read_note(path)
+            # Return the newly created note
+            note = await self.read_note(path)
 
-        # Keep the vault-wide cache (notes/tags/links index) in sync. Every
-        # tool that mutates a note (create/update/edit/move/rename/tag ops/
-        # daily notes) funnels through this method, so hooking it here is
-        # the single point that covers all of them. The SQLite search index
-        # gets the same write-through right after.
-        await self.cache.note_mutated(path, content)
-        await self._index_note_mutated(full_path, content)
+            # Keep the vault-wide cache (notes/tags/links index) in sync. Every
+            # tool that mutates a note (create/update/edit/move/rename/tag ops/
+            # daily notes) funnels through this method, so hooking it here is
+            # the single point that covers all of them. The SQLite search index
+            # gets the same write-through right after.
+            await self.cache.note_mutated(path, content)
+            await self._index_note_mutated(full_path)
+        except BaseException:
+            self._index_dirty = True
+            raise
 
         return note
 
@@ -439,12 +449,21 @@ class ObsidianVault:
 
         # Checked before the unlink: afterwards the entry no longer lists, and
         # write-through must know whether full_path spells it as the disk does.
-        spelled_as_on_disk = self._spelled_as_on_disk(full_path)
+        # Only worth its folder listings once there is an index to write to.
+        spelled_as_on_disk = (
+            self._persistent_index_initialized and self._spelled_as_on_disk(full_path)
+        )
 
-        # Delete the file
-        full_path.unlink()
-        await self.cache.note_mutated(path, None)
-        await self._index_note_mutated(full_path, None, spelled_as_on_disk)
+        # From the unlink on, flag the index however this ends (see write_note).
+        try:
+            full_path.unlink()
+            await self.cache.note_mutated(path, None)
+            await self._index_note_mutated(
+                full_path, deleted=True, spelled_as_on_disk=spelled_as_on_disk
+            )
+        except BaseException:
+            self._index_dirty = True
+            raise
         return True
 
     def _require_vault_dir(self) -> None:
@@ -527,12 +546,18 @@ class ObsidianVault:
 
         Every SQLite-backed search calls this first. A due pass is awaited,
         so a query never reads a stale or half-built index (the old refresh
-        was fire-and-forget and answered from the previous state). No lock on
-        the fast path; otherwise initialization and the pass run under
-        _index_lock and are re-checked inside it, so concurrent first queries
-        build the index once.
+        was fire-and-forget and answered from the previous state). A query
+        that arrives while a pass or a write-through holds _index_lock waits
+        for it as well: a pass commits note by note, and reading between two
+        commits would answer from a half-updated index. Initialization and the
+        pass run under _index_lock and are re-checked inside it, so concurrent
+        first queries build the index once.
         """
-        if self._persistent_index_initialized and self._index_is_fresh():
+        if (
+            self._persistent_index_initialized
+            and self._index_is_fresh()
+            and not self._index_lock.locked()
+        ):
             return
         async with self._index_lock:
             await self._initialize_persistent_index()
@@ -541,15 +566,18 @@ class ObsidianVault:
 
     async def sync_index(self, full: bool = False) -> dict[str, Any]:
         """Reconcile the notes cache and the SQLite index with the vault now,
-        ignoring OBSIDIAN_INDEX_UPDATE_INTERVAL -- the explicit resync behind
-        sync_vault_index_tool, for edits made outside this server.
+        ignoring OBSIDIAN_INDEX_UPDATE_INTERVAL -- the explicit resync, for
+        edits made outside this server.
 
         Args:
-            full: Re-index every note instead of only those whose mtime/size
-                changed (for an index suspected to be wrong).
+            full: Rebuild both stores from every file instead of trusting the
+                stored (mtime, size), for a cache or index suspected to be
+                wrong. The index's stamps are invalidated first and the
+                normal pass then re-indexes every note, so a full sync that
+                is interrupted is finished by the next plain one.
 
         Returns:
-            This pass's counts -- see _update_persistent_index.
+            This pass's counts, plus "full" -- see _update_persistent_index.
 
         Raises:
             RuntimeError: The vault folder is not reachable. Checked before
@@ -557,26 +585,30 @@ class ObsidianVault:
                 a folder it cannot walk would deindex every note.
         """
         self._require_vault_dir()
-        await self.cache.sync()
+        await self.cache.sync(full)
         async with self._index_lock:
             await self._initialize_persistent_index()
-            return await self._update_persistent_index(full)
+            if full:
+                await self._require_persistent_index().invalidate_all()
+            stats = await self._update_persistent_index()
+        return {**stats, "full": full}
 
-    async def _update_persistent_index(self, full: bool = False) -> dict[str, Any]:
+    async def _update_persistent_index(self) -> dict[str, Any]:
         """Reconcile the persistent index with the vault on disk.
 
         Diffs every *.md file's (mtime, size) against what the index stored,
-        re-indexes new and changed files (all of them when full=True), and
-        drops entries whose file is gone. Caller must hold _index_lock.
+        re-indexes new and changed files, and drops entries whose file is
+        gone. Caller must hold _index_lock.
 
         Clears _index_dirty before anything is read: the walk sees every
         change made up to then, while a write-through that marks the index
-        dirty after this point (even one cancelled while waiting for the lock
-        this pass holds) stays dirty for the next query. A pass that does not
-        finish settles nothing and gives back what it cleared.
+        dirty after this point (it never waits for the lock this pass holds)
+        stays dirty for the next query. A pass that does not finish (an
+        error, a client interrupt) leaves the index dirty: it settled
+        nothing, so the next query runs another.
 
         Returns:
-            {"scanned", "added", "updated", "removed", "failed", "full",
+            {"scanned", "added", "updated", "removed", "failed",
             "duration_ms"} for this pass.
 
         Raises:
@@ -585,16 +617,14 @@ class ObsidianVault:
         """
         self._require_vault_dir()
         index = self._require_persistent_index()
-        was_dirty, self._index_dirty = self._index_dirty, False
+        self._index_dirty = False
         try:
-            return await self._reconcile(index, full)
+            return await self._reconcile(index)
         except BaseException:
-            self._index_dirty = self._index_dirty or was_dirty
+            self._index_dirty = True
             raise
 
-    async def _reconcile(
-        self, index: PersistentSearchIndex, full: bool
-    ) -> dict[str, Any]:
+    async def _reconcile(self, index: PersistentSearchIndex) -> dict[str, Any]:
         """The work of a pass: diff the disk against the index, index what
         changed, sweep the orphans and stamp the time."""
         started = time.monotonic()
@@ -603,29 +633,39 @@ class ObsidianVault:
             relpath: (stat.st_mtime, stat.st_size)
             for relpath, stat in iter_md_files(self.vault_path)
         }
+        # A folder that vanished mid-walk reads as an empty vault, and
+        # sweeping against that would drop every row.
+        self._require_vault_dir()
         changed = [
             relpath
             for relpath, disk_stat in on_disk.items()
-            if full or stored.get(relpath) != disk_stat
+            if stored.get(relpath) != disk_stat
         ]
-        logger.info(
-            f"Index pass: {len(on_disk)} notes on disk, {len(changed)} to index"
-        )
 
         indexed = await self._index_in_batches(index, changed, on_disk)
         added = sum(1 for relpath in indexed if relpath not in stored)
+        updated = len(indexed) - added
         removed = len(stored.keys() - on_disk.keys())
+        failed = len(changed) - len(indexed)
         await index.clear_orphaned_entries(set(on_disk))
         self._index_timestamp = time.monotonic()
 
+        duration_ms = round((time.monotonic() - started) * 1000)
+        # Most passes find nothing to do (every query may run one): keep those
+        # out of the INFO log.
+        logger.log(
+            logging.INFO if indexed or removed or failed else logging.DEBUG,
+            f"Index pass: {len(on_disk)} notes on disk, {added} added, "
+            f"{updated} updated, {removed} removed, {failed} failed "
+            f"({duration_ms} ms)",
+        )
         return {
             "scanned": len(on_disk),
             "added": added,
-            "updated": len(indexed) - added,
+            "updated": updated,
             "removed": removed,
-            "failed": len(changed) - len(indexed),
-            "full": full,
-            "duration_ms": round((time.monotonic() - started) * 1000),
+            "failed": failed,
+            "duration_ms": duration_ms,
         }
 
     async def _index_in_batches(
@@ -685,70 +725,67 @@ class ObsidianVault:
         return True
 
     async def _write_through(
-        self, relpath: str, full_path: Path, content: str | None
+        self, relpath: str, full_path: Path, deleted: bool
     ) -> None:
-        """Drop relpath from the SQLite index (content None) or re-index it
-        from the file an MCP write just produced. Caller holds _index_lock."""
+        """Drop relpath from the SQLite index (deleted) or re-index it from
+        the file an MCP write just produced. Caller holds _index_lock.
+
+        Indexes the way a pass does: stat first, then read the file back --
+        never the caller's in-memory content. An outside edit that landed
+        since the write would otherwise be filed under its own (mtime, size)
+        with the older text, and no later pass would see a difference.
+        """
         index = self._require_persistent_index()
-        if content is None:
+        if deleted:
             await index.remove_file(relpath)
             return
         stat = full_path.stat()
-        await index.index_file(
-            relpath,
-            content,
-            stat.st_mtime,
-            stat.st_size,
-            self._extract_file_metadata(content),
-        )
+        await self._index_note_file(index, relpath, stat.st_mtime, stat.st_size)
 
     async def _index_note_mutated(
         self,
         full_path: Path,
-        content: str | None,
+        deleted: bool = False,
         spelled_as_on_disk: bool | None = None,
     ) -> None:
         """Write-through counterpart of cache.note_mutated for the SQLite
-        index: re-index (or drop, when content is None) the one note an MCP
-        write just touched, so it is searchable without waiting for a pass.
+        index: re-index (or drop, when deleted) the one note an MCP write just
+        touched, so it is searchable without waiting for a pass.
 
         No-op until the index exists -- the first query's pass indexes the
-        note anyway. Runs under _index_lock so a pass that walked the disk
-        before this write cannot then drop the fresh entry as an orphan.
-
-        The row is keyed by the spelling the disk lists, which is what the
-        walk produces. When full_path spells the note differently (see
-        _spelled_as_on_disk) no row is written -- keyed by the caller's
-        spelling it would be a duplicate or ghost row -- and the index is
-        marked dirty instead. spelled_as_on_disk is that check's result:
-        delete_note passes the one it took before unlinking, a write leaves
-        it None and it is checked here, the file now existing.
+        note anyway. Marks the index dirty instead of writing a row when the
+        note is not spelled as the disk lists it (see _spelled_as_on_disk;
+        delete_note passes the check it took before unlinking, a write leaves
+        it None and it is checked here) or when _index_lock is held: a write
+        never waits for a running pass, whose walk may predate it. The pass
+        cleared the flag when it started, so the next query reconciles.
 
         A failure here must not fail a write that already hit the disk: it is
-        logged. After a failure or a cancellation (also while waiting for the
-        lock) the index is marked dirty and the next query reconciles.
+        logged and marks the index dirty. A cancellation is not caught here;
+        write_note and delete_note flag the index for anything that
+        interrupts them.
         """
         if not self._persistent_index_initialized:
             return
-        if spelled_as_on_disk is None:
-            spelled_as_on_disk = self._spelled_as_on_disk(full_path)
-        relpath = full_path.relative_to(self.vault_path).as_posix()
         try:
-            async with self._index_lock:
-                if spelled_as_on_disk:
-                    await self._write_through(relpath, full_path, content)
-                else:
-                    logger.info(
-                        f"{relpath} is not spelled as the disk lists it; "
-                        "the next search re-syncs the index"
-                    )
-                    self._index_dirty = True
-        except asyncio.CancelledError:
-            self._index_dirty = True
-            raise
+            if spelled_as_on_disk is None:
+                spelled_as_on_disk = self._spelled_as_on_disk(full_path)
+            relpath = full_path.relative_to(self.vault_path).as_posix()
+            if not spelled_as_on_disk:
+                logger.info(
+                    f"{relpath} is not spelled as the disk lists it; "
+                    "the next search re-syncs the index"
+                )
+                self._index_dirty = True
+            elif self._index_lock.locked():
+                logger.debug(f"A pass is running; the next search indexes {relpath}")
+                self._index_dirty = True
+            else:
+                async with self._index_lock:
+                    await self._write_through(relpath, full_path, deleted)
         except Exception as e:
             logger.warning(
-                f"Search index write-through failed for {relpath}: {e}; "
+                f"Search index write-through failed for {full_path}: {e}; "
                 "the next search re-syncs the index"
             )
             self._index_dirty = True
