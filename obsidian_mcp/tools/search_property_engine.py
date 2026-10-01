@@ -220,6 +220,12 @@ async def _search_by_property(
 
     # Check if we can use the persistent index for property search
     if hasattr(vault, "persistent_index") and vault.persistent_index:
+        # Same freshness gate as text/regex search: a due reconcile pass runs
+        # (awaited) before the index is read. Outside the try on purpose: a
+        # gate failure (an unreachable vault) must surface like it does for
+        # those searches, not fall through to the manual scan below, which
+        # would answer from a folder it cannot see.
+        await vault.ensure_index_fresh()
         try:
             # Use persistent index for efficient property search
             results_from_index = await vault.persistent_index.search_by_property(

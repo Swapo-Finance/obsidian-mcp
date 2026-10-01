@@ -148,7 +148,7 @@ class PersistentSearchIndex:
 
         Args:
             vault_path: Path to the Obsidian vault
-            index_path: Path to store the SQLite database (defaults to vault/.obsidian/search-index.db)
+            index_path: Path to store the SQLite database (defaults to vault/.obsidian/mcp-search-index.db)
         """
         self.vault_path = vault_path
 
@@ -362,36 +362,13 @@ class PersistentSearchIndex:
             )
         return self.db
 
-    async def get_file_info(self, filepath: str) -> dict[str, Any] | None:
-        """Get cached file information."""
+    async def get_file_stats(self) -> dict[str, tuple[float, int]]:
+        """(mtime, size) of every indexed file in one query -- what
+        ObsidianVault's reconcile pass diffs against the vault on disk,
+        instead of one SELECT per file."""
         db = self._require_db()
-        async with self._lock:
-            cursor = await db.execute(
-                "SELECT mtime, size, content_hash, last_indexed FROM file_index WHERE filepath = ?",
-                (filepath,),
-            )
-            row = await cursor.fetchone()
-
-            if row:
-                return {
-                    "mtime": row[0],
-                    "size": row[1],
-                    "content_hash": row[2],
-                    "last_indexed": row[3],
-                }
-            return None
-
-    async def needs_update(
-        self, filepath: str, current_mtime: float, current_size: int
-    ) -> bool:
-        """Check if a file needs to be re-indexed."""
-        file_info = await self.get_file_info(filepath)
-
-        if not file_info:
-            return True
-
-        # Check if file has been modified
-        return file_info["mtime"] != current_mtime or file_info["size"] != current_size
+        cursor = await db.execute("SELECT filepath, mtime, size FROM file_index")
+        return {row[0]: (row[1], row[2]) for row in await cursor.fetchall()}
 
     def _determine_property_type(self, value: Any) -> str:
         """Delegates to index_text.determine_property_type (kept since
@@ -492,7 +469,11 @@ class PersistentSearchIndex:
                         )
 
                 await db.commit()
-            except Exception:
+            # BaseException, not Exception: a client interrupt cancels the
+            # awaiting task with CancelledError, and a transaction left open
+            # here would be committed, half applied, by the next commit on
+            # this shared connection.
+            except BaseException:
                 await db.rollback()
                 raise
 
@@ -529,7 +510,26 @@ class PersistentSearchIndex:
             try:
                 await self._remove_file_locked(db, filepath)
                 await db.commit()
-            except Exception:
+            except BaseException:  # incl. CancelledError, see index_file
+                await db.rollback()
+                raise
+
+    async def invalidate_all(self) -> None:
+        """Forget every file's stored mtime, keeping its row and content.
+
+        The start of a full re-index: afterwards every file differs from its
+        disk stamp, so an ordinary diff pass re-indexes all of them -- and one
+        that dies midway leaves the files it did not reach marked stale,
+        where a pass that merely ignored the stamps would leave them looking
+        up to date. The -1 stamp (a second before the epoch) matches no real
+        file in practice.
+        """
+        db = self._require_db()
+        async with self._lock:
+            try:
+                await db.execute("UPDATE file_index SET mtime = -1")
+                await db.commit()
+            except BaseException:  # incl. CancelledError, see index_file
                 await db.rollback()
                 raise
 
@@ -898,7 +898,7 @@ class PersistentSearchIndex:
                 for filepath in orphaned:
                     await self._remove_file_locked(db, filepath)
                 await db.commit()
-            except Exception:
+            except BaseException:  # incl. CancelledError, see index_file
                 await db.rollback()
                 raise
 

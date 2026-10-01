@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -10,13 +11,14 @@ from typing import Any
 
 import aiofiles
 
+from ..constants import ERROR_MESSAGES
 from ..models import Note, NoteMetadata
 from .env import read_bool_env, read_choice_env, read_int_env
 from .frontmatter import extract_tags, normalize_frontmatter, parse_frontmatter
 from .image_io import read_image as read_image_file
 from .index_metadata import extract_file_metadata, serialize_metadata
 from .persistent_index import PersistentSearchIndex
-from .vault_cache import VaultCache
+from .vault_cache import VaultCache, iter_md_files
 from .vault_config import normalize_vault_relative_path, parse_folder_templates
 
 logger = logging.getLogger(__name__)
@@ -56,7 +58,15 @@ class ObsidianVault:
 
         # Initialize SQLite search index
         self.persistent_index: PersistentSearchIndex | None = None
+        # time.monotonic() at the end of the last reconcile pass; None until
+        # the first pass.
         self._index_timestamp: float | None = None
+        # True while the index may be behind the disk: a write was interrupted,
+        # its write-through failed, found a pass holding _index_lock, or could
+        # not key the note as the disk lists it, or a pass did not finish. The
+        # next query reconciles, even in manual mode. A pass clears it when it
+        # starts, see _update_persistent_index.
+        self._index_dirty = False
         self._index_lock = asyncio.Lock()
 
         # Track if persistent index has been initialized
@@ -65,15 +75,14 @@ class ObsidianVault:
         # Store last search metadata for access by tools
         self._last_search_metadata: dict[str, Any] | None = None
 
-        # Track if an index update is in progress
-        self._index_update_in_progress = False
-        self._index_update_task: asyncio.Task | None = None
-
         # Configuration for index updates
         self._index_update_interval = int(
             os.getenv("OBSIDIAN_INDEX_UPDATE_INTERVAL", "300")
         )  # 5 minutes default
-        self._index_batch_size = int(os.getenv("OBSIDIAN_INDEX_BATCH_SIZE", "50"))
+        # At least 1: a zero step makes range() raise, which would break every pass.
+        self._index_batch_size = max(
+            1, int(os.getenv("OBSIDIAN_INDEX_BATCH_SIZE", "50"))
+        )
         self._auto_index_update = os.getenv(
             "OBSIDIAN_AUTO_INDEX_UPDATE", "true"
         ).lower() in ("true", "1", "yes", "on")
@@ -395,18 +404,26 @@ class ObsidianVault:
         # Create parent directories if needed
         full_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write content asynchronously
-        async with aiofiles.open(full_path, "w", encoding="utf-8") as f:
-            await f.write(content)
+        # From the disk write on, however this ends (an error, a client
+        # interrupt), the index may lag the disk: flag it for the next query.
+        try:
+            # Write content asynchronously
+            async with aiofiles.open(full_path, "w", encoding="utf-8") as f:
+                await f.write(content)
 
-        # Return the newly created note
-        note = await self.read_note(path)
+            # Return the newly created note
+            note = await self.read_note(path)
 
-        # Keep the vault-wide cache (notes/tags/links index) in sync. Every
-        # tool that mutates a note (create/update/edit/move/rename/tag ops/
-        # daily notes) funnels through this method, so hooking it here is
-        # the single point that covers all of them.
-        await self.cache.note_mutated(path, content)
+            # Keep the vault-wide cache (notes/tags/links index) in sync. Every
+            # tool that mutates a note (create/update/edit/move/rename/tag ops/
+            # daily notes) funnels through this method, so hooking it here is
+            # the single point that covers all of them. The SQLite search index
+            # gets the same write-through right after.
+            await self.cache.note_mutated(path, content)
+            await self._index_note_mutated(full_path)
+        except BaseException:
+            self._index_dirty = True
+            raise
 
         return note
 
@@ -430,14 +447,39 @@ class ObsidianVault:
         if not full_path.exists():
             raise FileNotFoundError(f"Note not found: {path}")
 
-        # Delete the file
-        full_path.unlink()
-        await self.cache.note_mutated(path, None)
+        # Checked before the unlink: afterwards the entry no longer lists, and
+        # write-through must know whether full_path spells it as the disk does.
+        # Only worth its folder listings once there is an index to write to.
+        spelled_as_on_disk = (
+            self._persistent_index_initialized and self._spelled_as_on_disk(full_path)
+        )
+
+        # From the unlink on, flag the index however this ends (see write_note).
+        try:
+            full_path.unlink()
+            await self.cache.note_mutated(path, None)
+            await self._index_note_mutated(
+                full_path, deleted=True, spelled_as_on_disk=spelled_as_on_disk
+            )
+        except BaseException:
+            self._index_dirty = True
+            raise
         return True
+
+    def _require_vault_dir(self) -> None:
+        """Raise before any index work when the vault folder is gone (an
+        unmounted drive or network share). A pass over a missing folder
+        would walk zero notes and delete every index entry as an orphan, and
+        initializing would fail with an opaque mkdir error."""
+        if not self.vault_path.is_dir():
+            raise RuntimeError(
+                ERROR_MESSAGES["vault_unavailable"].format(path=self.vault_path)
+            )
 
     async def _initialize_persistent_index(self) -> None:
         """Initialize the persistent search index if not already done."""
         if not self._persistent_index_initialized:
+            self._require_vault_dir()
             try:
                 self.persistent_index = PersistentSearchIndex(self.vault_path)
                 await self.persistent_index.initialize()
@@ -478,113 +520,280 @@ class ObsidianVault:
             raise RuntimeError("Persistent search index not initialized")
         return self.persistent_index
 
-    def _start_background_index_update(self) -> None:
-        """Start a background task to update the search index."""
-        if self._index_update_in_progress:
-            logger.warning("Index update already in progress, skipping")
+    def _index_is_fresh(self) -> bool:
+        """True when no reconcile pass is due before the next SQLite query.
+
+        Never fresh before the first pass, nor while _index_dirty is set. With
+        OBSIDIAN_AUTO_INDEX_UPDATE off (manual mode) it stays fresh after
+        that: only write-through and sync_index() change the index. Otherwise
+        fresh until OBSIDIAN_INDEX_UPDATE_INTERVAL seconds have passed; 0
+        means re-check before every query (same convention as
+        OBSIDIAN_CACHE_STAT_TTL_SECONDS). The age is measured on the
+        monotonic clock, so a wall-clock step (NTP correction, manual change)
+        cannot keep the index fresh past its interval.
+        """
+        if self._index_timestamp is None or self._index_dirty:
+            return False
+        if not self._auto_index_update:
+            return True
+        elapsed = time.monotonic() - self._index_timestamp
+        return (
+            self._index_update_interval > 0 and elapsed <= self._index_update_interval
+        )
+
+    async def ensure_index_fresh(self) -> None:
+        """Make the SQLite index match the vault before a query reads it.
+
+        Every SQLite-backed search calls this first. A due pass is awaited,
+        so a query never reads a stale or half-built index (the old refresh
+        was fire-and-forget and answered from the previous state). A query
+        that arrives while a pass or a write-through holds _index_lock waits
+        for it as well: a pass commits note by note, and reading between two
+        commits would answer from a half-updated index. Initialization and the
+        pass run under _index_lock and are re-checked inside it, so concurrent
+        first queries build the index once.
+        """
+        if (
+            self._persistent_index_initialized
+            and self._index_is_fresh()
+            and not self._index_lock.locked()
+        ):
             return
-
-        # Cancel any existing update task
-        if self._index_update_task and not self._index_update_task.done():
-            self._index_update_task.cancel()
-
-        # Start new background update
-        self._index_update_task = asyncio.create_task(self._update_search_index_async())
-        logger.info("Started background index update task")
-
-    async def _update_search_index_async(self) -> None:
-        """Async wrapper for index update with error handling."""
-        try:
-            self._index_update_in_progress = True
-            await self._update_search_index()
-        except Exception as e:
-            logger.error(f"Background index update failed: {e}")
-        finally:
-            self._index_update_in_progress = False
-            logger.info("Background index update completed")
-
-    async def _update_search_index(self) -> None:
-        """Update the search index with current vault content."""
-        import time
-
-        # Initialize persistent index if needed
-        if not self._persistent_index_initialized:
-            await self._initialize_persistent_index()
-
         async with self._index_lock:
-            # Use persistent index with incremental updates
-            await self._update_persistent_index()
-            self._index_timestamp = time.time()
+            await self._initialize_persistent_index()
+            if not self._index_is_fresh():
+                await self._update_persistent_index()
 
-    async def _update_persistent_index(self) -> None:
-        """Update the persistent search index with incremental updates."""
+    async def sync_index(self, full: bool = False) -> dict[str, Any]:
+        """Reconcile the notes cache and the SQLite index with the vault now,
+        ignoring OBSIDIAN_INDEX_UPDATE_INTERVAL -- the explicit resync, for
+        edits made outside this server.
+
+        Args:
+            full: Rebuild both stores from every file instead of trusting the
+                stored (mtime, size), for a cache or index suspected to be
+                wrong. The index's stamps are invalidated first and the
+                normal pass then re-indexes every note, so a full sync that
+                is interrupted is finished by the next plain one.
+
+        Returns:
+            This pass's counts, plus "full" -- see _update_persistent_index.
+
+        Raises:
+            RuntimeError: The vault folder is not reachable. Checked before
+                the cache or the index is touched: syncing the cache against
+                a folder it cannot walk would deindex every note.
+        """
+        self._require_vault_dir()
+        await self.cache.sync(full)
+        async with self._index_lock:
+            await self._initialize_persistent_index()
+            if full:
+                await self._require_persistent_index().invalidate_all()
+            stats = await self._update_persistent_index()
+        return {**stats, "full": full}
+
+    async def _update_persistent_index(self) -> dict[str, Any]:
+        """Reconcile the persistent index with the vault on disk.
+
+        Diffs every *.md file's (mtime, size) against what the index stored,
+        re-indexes new and changed files, and drops entries whose file is
+        gone. Caller must hold _index_lock.
+
+        Clears _index_dirty before anything is read: the walk sees every
+        change made up to then, while a write-through that marks the index
+        dirty after this point (it never waits for the lock this pass holds)
+        stays dirty for the next query. A pass that does not finish (an
+        error, a client interrupt) leaves the index dirty: it settled
+        nothing, so the next query runs another.
+
+        Returns:
+            {"scanned", "added", "updated", "removed", "failed",
+            "duration_ms"} for this pass.
+
+        Raises:
+            RuntimeError: The vault folder is not reachable (see
+                _require_vault_dir).
+        """
+        self._require_vault_dir()
         index = self._require_persistent_index()
-        existing_files = set()
-        files_to_process = []
-
-        # First, collect all markdown files
-        logger.info("Scanning vault for markdown files...")
+        self._index_dirty = False
         try:
-            all_files = list(self.vault_path.rglob("*.md"))
-            logger.info(f"Found {len(all_files)} markdown files in vault")
-        except Exception as e:
-            logger.error(f"Failed to scan vault: {e}")
-            return
+            return await self._reconcile(index)
+        except BaseException:
+            self._index_dirty = True
+            raise
 
-        # Check which files need updating
-        for md_file in all_files:
-            try:
-                stat = md_file.stat()
-                rel_path = str(md_file.relative_to(self.vault_path))
-                existing_files.add(rel_path)
+    async def _reconcile(self, index: PersistentSearchIndex) -> dict[str, Any]:
+        """The work of a pass: diff the disk against the index, index what
+        changed, sweep the orphans and stamp the time."""
+        started = time.monotonic()
+        stored = await index.get_file_stats()
+        on_disk = {
+            relpath: (stat.st_mtime, stat.st_size)
+            for relpath, stat in iter_md_files(self.vault_path)
+        }
+        # A folder that vanished mid-walk reads as an empty vault, and
+        # sweeping against that would drop every row.
+        self._require_vault_dir()
+        changed = [
+            relpath
+            for relpath, disk_stat in on_disk.items()
+            if stored.get(relpath) != disk_stat
+        ]
 
-                # Check if file needs updating
-                if await index.needs_update(rel_path, stat.st_mtime, stat.st_size):
-                    files_to_process.append((md_file, rel_path, stat))
-            except Exception as e:
-                logger.error(f"Failed to check file {md_file}: {e}")
-                continue
+        indexed = await self._index_in_batches(index, changed, on_disk)
+        added = sum(1 for relpath in indexed if relpath not in stored)
+        updated = len(indexed) - added
+        removed = len(stored.keys() - on_disk.keys())
+        failed = len(changed) - len(indexed)
+        await index.clear_orphaned_entries(set(on_disk))
+        self._index_timestamp = time.monotonic()
 
-        logger.info(f"{len(files_to_process)} files need indexing")
+        duration_ms = round((time.monotonic() - started) * 1000)
+        # Most passes find nothing to do (every query may run one): keep those
+        # out of the INFO log.
+        logger.log(
+            logging.INFO if indexed or removed or failed else logging.DEBUG,
+            f"Index pass: {len(on_disk)} notes on disk, {added} added, "
+            f"{updated} updated, {removed} removed, {failed} failed "
+            f"({duration_ms} ms)",
+        )
+        return {
+            "scanned": len(on_disk),
+            "added": added,
+            "updated": updated,
+            "removed": removed,
+            "failed": failed,
+            "duration_ms": duration_ms,
+        }
 
-        # Process files in batches
-        for i in range(0, len(files_to_process), self._index_batch_size):
-            batch = files_to_process[i : i + self._index_batch_size]
-            batch_end = min(i + self._index_batch_size, len(files_to_process))
+    async def _index_in_batches(
+        self,
+        index: PersistentSearchIndex,
+        relpaths: list[str],
+        on_disk: dict[str, tuple[float, int]],
+    ) -> list[str]:
+        """Index relpaths in batches of OBSIDIAN_INDEX_BATCH_SIZE and return
+        those that succeeded. A note that cannot be read or indexed is logged
+        and skipped: it keeps its stale row and the next pass retries it."""
+        indexed: list[str] = []
+        for i in range(0, len(relpaths), self._index_batch_size):
+            batch = relpaths[i : i + self._index_batch_size]
             logger.info(
-                f"Processing batch {i + 1}-{batch_end} of {len(files_to_process)} files"
+                f"Indexing batch {i + 1}-{i + len(batch)} of {len(relpaths)} files"
             )
-
-            for md_file, rel_path, stat in batch:
+            for relpath in batch:
+                mtime, size = on_disk[relpath]
                 try:
-                    # Read content
-                    async with aiofiles.open(md_file, "r", encoding="utf-8") as f:
-                        content = await f.read()
-
-                    # Extract metadata
-                    metadata = self._extract_file_metadata(content)
-
-                    # Index the file
-                    await index.index_file(
-                        rel_path, content, stat.st_mtime, stat.st_size, metadata
-                    )
-
-                    logger.debug(f"Indexed: {rel_path}")
+                    await self._index_note_file(index, relpath, mtime, size)
                 except Exception as e:
-                    logger.error(f"Failed to index {md_file}: {e}")
-                    continue
+                    logger.error(f"Failed to index {relpath}: {e}")
+                else:
+                    indexed.append(relpath)
+        return indexed
 
-            # Yield control periodically to prevent blocking
-            await asyncio.sleep(0.1)
+    async def _index_note_file(
+        self, index: PersistentSearchIndex, relpath: str, mtime: float, size: int
+    ) -> None:
+        """Read one note from disk and (re)index it with its metadata."""
+        async with aiofiles.open(self.vault_path / relpath, "r", encoding="utf-8") as f:
+            content = await f.read()
+        await index.index_file(
+            relpath, content, mtime, size, self._extract_file_metadata(content)
+        )
 
-        # Remove orphaned entries
-        logger.info("Cleaning up orphaned index entries...")
-        await index.clear_orphaned_entries(existing_files)
-        logger.info("Index update completed")
+    def _spelled_as_on_disk(self, full_path: Path) -> bool:
+        """True when every component of full_path below the vault root is
+        spelled exactly as its parent folder lists it.
+
+        Case- and Unicode-normalization-insensitive filesystems (APFS, NTFS)
+        resolve several spellings to one file -- notes/foo.md for Notes/Foo.md,
+        a precomposed "café.md" for a decomposed one -- while the pass's walk
+        keys the index by the spelling the disk lists. A folder that cannot be
+        listed counts as a mismatch: the caller then falls back to a reconcile.
+        """
+        folder = self.vault_path
+        for name in full_path.relative_to(self.vault_path).parts:
+            try:
+                listed = os.listdir(folder)
+            except OSError:
+                return False
+            if name not in listed:
+                return False
+            folder = folder / name
+        return True
+
+    async def _write_through(
+        self, relpath: str, full_path: Path, deleted: bool
+    ) -> None:
+        """Drop relpath from the SQLite index (deleted) or re-index it from
+        the file an MCP write just produced. Caller holds _index_lock.
+
+        Indexes the way a pass does: stat first, then read the file back --
+        never the caller's in-memory content. An outside edit that landed
+        since the write would otherwise be filed under its own (mtime, size)
+        with the older text, and no later pass would see a difference.
+        """
+        index = self._require_persistent_index()
+        if deleted:
+            await index.remove_file(relpath)
+            return
+        stat = full_path.stat()
+        await self._index_note_file(index, relpath, stat.st_mtime, stat.st_size)
+
+    async def _index_note_mutated(
+        self,
+        full_path: Path,
+        deleted: bool = False,
+        spelled_as_on_disk: bool | None = None,
+    ) -> None:
+        """Write-through counterpart of cache.note_mutated for the SQLite
+        index: re-index (or drop, when deleted) the one note an MCP write just
+        touched, so it is searchable without waiting for a pass.
+
+        No-op until the index exists -- the first query's pass indexes the
+        note anyway. Marks the index dirty instead of writing a row when the
+        note is not spelled as the disk lists it (see _spelled_as_on_disk;
+        delete_note passes the check it took before unlinking, a write leaves
+        it None and it is checked here) or when _index_lock is held: a write
+        never waits for a running pass, whose walk may predate it. The pass
+        cleared the flag when it started, so the next query reconciles.
+
+        A failure here must not fail a write that already hit the disk: it is
+        logged and marks the index dirty. A cancellation is not caught here;
+        write_note and delete_note flag the index for anything that
+        interrupts them.
+        """
+        if not self._persistent_index_initialized:
+            return
+        try:
+            if spelled_as_on_disk is None:
+                spelled_as_on_disk = self._spelled_as_on_disk(full_path)
+            relpath = full_path.relative_to(self.vault_path).as_posix()
+            if not spelled_as_on_disk:
+                logger.info(
+                    f"{relpath} is not spelled as the disk lists it; "
+                    "the next search re-syncs the index"
+                )
+                self._index_dirty = True
+            elif self._index_lock.locked():
+                logger.debug(f"A pass is running; the next search indexes {relpath}")
+                self._index_dirty = True
+            else:
+                async with self._index_lock:
+                    await self._write_through(relpath, full_path, deleted)
+        except Exception as e:
+            logger.warning(
+                f"Search index write-through failed for {full_path}: {e}; "
+                "the next search re-syncs the index"
+            )
+            self._index_dirty = True
 
     def _extract_file_metadata(self, content: str) -> dict[str, Any]:
         """Delegates to index_metadata.extract_file_metadata (kept as a
-        vault method since _update_persistent_index calls it via self)."""
+        vault method since the index pass and write-through call it via
+        self)."""
         return extract_file_metadata(content)
 
     def _serialize_metadata(self, obj: Any) -> Any:
@@ -608,32 +817,7 @@ class ObsidianVault:
 
         Note: Search metadata (total_count, truncated) is stored in self._last_search_metadata
         """
-        import time
-
-        # Initialize persistent index if needed (but not initialized)
-        if not self._persistent_index_initialized:
-            await self._initialize_persistent_index()
-
-        # Check if we should update the index
-        should_update = False
-        if (
-            self._auto_index_update
-            and not self._index_update_in_progress
-            and (
-                self._index_timestamp is None
-                or (time.time() - self._index_timestamp) > self._index_update_interval
-            )
-        ):
-            should_update = True
-            logger.info(
-                f"Index is stale (last updated: {self._index_timestamp}), scheduling update"
-            )
-
-        # Start background index update if needed (non-blocking)
-        if should_update:
-            self._start_background_index_update()
-        elif self._index_update_in_progress:
-            logger.info("Index update already in progress, using current index")
+        await self.ensure_index_fresh()
 
         # Use persistent index
         return await self._search_with_persistent_index(
@@ -736,21 +920,7 @@ class ObsidianVault:
         Returns:
             List of search results with matches and context
         """
-        import time
-
-        # Initialize persistent index if needed
-        if not self._persistent_index_initialized:
-            await self._initialize_persistent_index()
-
-        # Update index if stale, reusing the same configurable interval as
-        # search_notes (self._index_update_interval) instead of a separate
-        # hardcoded threshold -- regex search has no documented need for
-        # fresher data than substring search.
-        if (
-            self._index_timestamp is None
-            or (time.time() - self._index_timestamp) > self._index_update_interval
-        ):
-            await self._update_search_index()
+        await self.ensure_index_fresh()
 
         # Use persistent index for efficient regex search
         index = self._require_persistent_index()

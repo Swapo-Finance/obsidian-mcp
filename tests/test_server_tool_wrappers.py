@@ -121,14 +121,15 @@ class TestHelpToolWrapper:
             os.environ.pop("OBSIDIAN_WIKILINK_POLICY", None)
 
     @pytest.mark.asyncio
-    async def test_tools_catalog_has_thirty_entries_including_new_ones(self, vault):
+    async def test_tools_catalog_has_thirty_one_entries_including_new_ones(self, vault):
         result = await help_tool.fn()
-        assert len(result["tools"]) == 30
+        assert len(result["tools"]) == 31
         tool_names = {t["name"] for t in result["tools"]}
         assert {
             "get_note_template_tool",
             "help_tool",
             "add_daily_note_tool",
+            "sync_vault_index_tool",
         } <= tool_names
 
     @pytest.mark.asyncio
@@ -273,17 +274,17 @@ class TestListTagsToolWrapper:
 
 
 class TestContextAnnotations:
-    """Structural test: verify all 30 @mcp.tool() wrappers have ctx: Optional[Context] annotation."""
+    """Structural test: verify all 31 @mcp.tool() wrappers have ctx: Optional[Context] annotation."""
 
-    def test_all_30_tools_have_ctx_optional_context_annotation(self):
-        """Import all 30 tool wrappers and verify ctx parameter has Optional[Context] type."""
+    def test_all_31_tools_have_ctx_optional_context_annotation(self):
+        """Import all 31 tool wrappers and verify ctx parameter has Optional[Context] type."""
         import inspect
         import types
         from typing import Union, get_args, get_origin
 
         from fastmcp import Context
 
-        # Import all 30 tool wrapper functions
+        # Import all 31 tool wrapper functions
         from obsidian_mcp.server import (
             add_daily_note_tool,
             add_tags_tool,
@@ -312,6 +313,7 @@ class TestContextAnnotations:
             search_by_property_tool,
             search_by_regex_tool,
             search_notes_tool,
+            sync_vault_index_tool,
             update_note_tool,
             update_tags_tool,
             view_note_images_tool,
@@ -327,6 +329,7 @@ class TestContextAnnotations:
             search_by_date_tool,
             search_by_regex_tool,
             search_by_property_tool,
+            sync_vault_index_tool,
             list_notes_tool,
             list_folders_tool,
             move_note_tool,
@@ -350,7 +353,7 @@ class TestContextAnnotations:
             add_daily_note_tool,
         ]
 
-        assert len(all_tools) == 30, f"Expected 30 tools, found {len(all_tools)}"
+        assert len(all_tools) == 31, f"Expected 31 tools, found {len(all_tools)}"
 
         for tool in all_tools:
             # .fn unwraps the @mcp.tool() decorator

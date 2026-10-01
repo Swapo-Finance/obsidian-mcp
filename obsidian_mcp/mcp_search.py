@@ -1,4 +1,4 @@
-"""Search tool wrappers: full-text search, search by date, search by regex."""
+"""Search tool wrappers: full-text search, search by date, search by regex, and index sync."""
 
 from typing import Annotated, Literal
 
@@ -11,6 +11,7 @@ from .tools import (
     search_by_date,
     search_by_regex,
     search_notes,
+    sync_vault_index,
 )
 
 
@@ -247,3 +248,55 @@ async def search_by_regex_tool(
         raise ToolError(str(e))
     except Exception as e:
         raise ToolError(f"Regex search failed: {e!s}")
+
+
+@mcp.tool()
+async def sync_vault_index_tool(
+    full: Annotated[
+        bool,
+        Field(
+            description=(
+                "Re-index every note, not just those whose modification time or "
+                "size changed. Slower; use only if results still look wrong "
+                "after a normal sync."
+            ),
+            default=False,
+        ),
+    ] = False,
+    ctx: Context | None = None,
+):
+    """
+    Force the search index and notes cache to match the vault files on disk now.
+
+    This server's own write tools keep the index current automatically. Files
+    changed any other way are picked up by a lazy re-check, not a background
+    one: it runs just before the next search_notes, search_by_regex, or
+    search_by_property call once OBSIDIAN_INDEX_UPDATE_INTERVAL seconds
+    (default 300) have passed, and never when OBSIDIAN_AUTO_INDEX_UPDATE=false.
+    Tag, link, and note-name results re-check within
+    OBSIDIAN_CACHE_STAT_TTL_SECONDS (default 30). Until a re-check runs,
+    searches can miss new notes, return deleted ones, or show old content.
+    Wait for this tool's result before the next search.
+
+    When to use:
+    - Right after vault files changed WITHOUT this server's tools: your own
+      file write/edit tools, shell commands, git (pull, checkout, merge), the
+      Obsidian app, sync clients, or other agents
+    - When a search, tag, or link result contradicts what is on disk
+
+    When NOT to use:
+    - After this server's own write tools (create/update/edit/delete/move/
+      rename notes, tags, properties) -- those are already reflected
+    - Routinely before every search
+
+    Returns:
+        {success, scanned, added, updated, removed, failed, full, duration_ms}:
+        notes seen on disk, newly indexed, re-indexed, dropped, and unreadable
+        in this pass.
+    """
+    try:
+        return await sync_vault_index(full, ctx)
+    except ValueError as e:
+        raise ToolError(str(e))
+    except Exception as e:
+        raise ToolError(f"Index sync failed: {e!s}")

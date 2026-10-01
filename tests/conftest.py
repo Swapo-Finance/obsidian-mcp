@@ -17,10 +17,12 @@ import pytest
 
 import obsidian_mcp.utils.filesystem as _filesystem
 
-# Cheap defense-in-depth, not a fix for any specific flake: default the
-# fire-and-forget background reindex task off for the whole test session.
-# No test asserts this value (verified), and every test that needs a warm
-# index already awaits vault._update_search_index() itself.
+# Manual index mode (OBSIDIAN_AUTO_INDEX_UPDATE=false) for the whole test
+# session: the SQLite index is built on the first query, then only this
+# server's writes and ObsidianVault.sync_index() change it, so no test depends
+# on the 300 s re-check interval. Tests that write files straight to disk and
+# then search call sync_index() themselves; tests of the automatic re-check
+# set the var to "true" explicitly (see test_index_sync.py).
 os.environ.setdefault("OBSIDIAN_AUTO_INDEX_UPDATE", "false")
 
 

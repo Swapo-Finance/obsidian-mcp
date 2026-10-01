@@ -45,6 +45,7 @@ from .mcp_search import (
     search_by_date_tool,
     search_by_regex_tool,
     search_notes_tool,
+    sync_vault_index_tool,
 )
 from .mcp_tags import (
     add_tags_tool,
@@ -83,6 +84,7 @@ __all__ = [
     "search_by_property_tool",
     "search_by_regex_tool",
     "search_notes_tool",
+    "sync_vault_index_tool",
     "update_note_tool",
     "update_tags_tool",
     "view_note_images_tool",

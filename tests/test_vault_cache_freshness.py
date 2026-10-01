@@ -207,5 +207,85 @@ class TestConsumersServedFromCacheNotLiveRescan:
         assert {t["name"] for t in fresh["items"]} == {"alpha", "beta"}
 
 
+@pytest.fixture
+def default_ttl(vault, monkeypatch):
+    """Pin the 30 s default TTL on the vault, whatever
+    OBSIDIAN_CACHE_STAT_TTL_SECONDS says in this environment: the tests that
+    use it assert what happens inside the TTL window."""
+    monkeypatch.setattr(vault, "cache_stat_ttl_seconds", 30)
+
+
+@pytest.mark.usefixtures("default_ttl")
+class TestSyncForcesStatDiff:
+    @pytest.mark.asyncio
+    async def test_sync_picks_up_external_change_without_waiting_for_ttl(
+        self, vault, monkeypatch
+    ):
+        counts = _count_scans(monkeypatch)
+        await build_vault_notes_index(vault)  # lazy full scan
+        (vault.vault_path / "External.md").write_text("# External\n")
+
+        await vault.cache.sync()
+
+        index = await build_vault_notes_index(vault)  # still inside the TTL
+        assert "External.md" in index
+        assert counts["stat_diff"] == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_before_first_build_does_not_scan(self, vault, monkeypatch):
+        counts = _count_scans(monkeypatch)
+
+        await vault.cache.sync()
+
+        assert counts == {"full_scan": 0, "stat_diff": 0}
+
+    @pytest.mark.asyncio
+    async def test_full_sync_builds_a_cache_that_was_never_built(
+        self, vault, monkeypatch
+    ):
+        counts = _count_scans(monkeypatch)
+
+        await vault.cache.sync(full=True)
+
+        assert counts == {"full_scan": 1, "stat_diff": 0}
+
+    @pytest.mark.asyncio
+    async def test_full_sync_rescans_a_built_cache_instead_of_diffing_stats(
+        self, vault, monkeypatch
+    ):
+        counts = _count_scans(monkeypatch)
+        await build_vault_notes_index(vault)  # lazy full scan
+
+        await vault.cache.sync(full=True)
+
+        assert counts == {"full_scan": 2, "stat_diff": 0}
+
+
+@pytest.mark.usefixtures("default_ttl")
+class TestExternalModifyReadOnce:
+    @pytest.mark.asyncio
+    async def test_externally_modified_note_is_reread_once_not_on_every_stat_diff(
+        self, vault, monkeypatch
+    ):
+        (vault.vault_path / "A.md").write_text("# A\n")
+        await build_vault_notes_index(vault)  # lazy full scan
+
+        (vault.vault_path / "A.md").write_text("# A, edited outside the server\n")
+
+        reads: list[str] = []
+        original_read_text = VaultCache._read_text
+
+        async def counting_read_text(self, relpath):
+            reads.append(relpath)
+            return await original_read_text(self, relpath)
+
+        monkeypatch.setattr(VaultCache, "_read_text", counting_read_text)
+
+        await vault.cache.sync()  # sees the edit: one re-read
+        await vault.cache.sync()  # nothing changed since: no re-read
+
+        assert reads == ["A.md"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

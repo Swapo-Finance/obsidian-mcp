@@ -115,85 +115,89 @@ More text after the JSON block.
 
         # Initialize vault
         vault = ObsidianVault(str(vault_path))
+        try:
+            # Build index
+            print("Building index...")
+            await vault.sync_index()
 
-        # Build index
-        print("Building index...")
-        await vault._update_search_index()
+            # Test 1: Simple JSON block pattern (what the user was trying)
+            print("\nTest 1: Simple JSON block search")
+            pattern = r"```json\s*\{[\s\S]*?\}\s*```"
 
-        # Test 1: Simple JSON block pattern (what the user was trying)
-        print("\nTest 1: Simple JSON block search")
-        pattern = r"```json\s*\{[\s\S]*?\}\s*```"
+            start_time = time.time()
+            results = await vault.search_by_regex(pattern, max_results=50)
+            search_time = time.time() - start_time
 
-        start_time = time.time()
-        results = await vault.search_by_regex(pattern, max_results=50)
-        search_time = time.time() - start_time
+            print(
+                f"Found {len(results)} files with JSON blocks in {search_time:.3f} seconds"
+            )
+            total_matches = sum(r["match_count"] for r in results)
+            print(f"Total JSON blocks found: {total_matches}")
 
-        print(
-            f"Found {len(results)} files with JSON blocks in {search_time:.3f} seconds"
-        )
-        total_matches = sum(r["match_count"] for r in results)
-        print(f"Total JSON blocks found: {total_matches}")
+            # Debug: Print actual results
+            for r in results:
+                print(f"  - {r['path']}: {r['match_count']} matches")
 
-        # Debug: Print actual results
-        for r in results:
-            print(f"  - {r['path']}: {r['match_count']} matches")
+            # Verify results
+            assert len(results) == 3  # All three files have JSON blocks
+            # Note: We limit matches per file to 5 by default, so we won't see all 100 matches
+            assert any(r["path"] == "large-doc.md" for r in results)
 
-        # Verify results
-        assert len(results) == 3  # All three files have JSON blocks
-        # Note: We limit matches per file to 5 by default, so we won't see all 100 matches
-        assert any(r["path"] == "large-doc.md" for r in results)
+            # Test 2: More specific pattern - find JSON with "endpoint" key
+            print("\nTest 2: JSON blocks with 'endpoint' key")
+            pattern = r'```json\s*\{[^}]*"endpoint"[^}]*\}'
 
-        # Test 2: More specific pattern - find JSON with "endpoint" key
-        print("\nTest 2: JSON blocks with 'endpoint' key")
-        pattern = r'```json\s*\{[^}]*"endpoint"[^}]*\}'
+            start_time = time.time()
+            results = await vault.search_by_regex(pattern, max_results=50)
+            search_time = time.time() - start_time
 
-        start_time = time.time()
-        results = await vault.search_by_regex(pattern, max_results=50)
-        search_time = time.time() - start_time
+            print(
+                f"Found {len(results)} files with endpoint JSON in {search_time:.3f} seconds"
+            )
 
-        print(
-            f"Found {len(results)} files with endpoint JSON in {search_time:.3f} seconds"
-        )
+            assert len(results) == 1  # Only api-docs.md has endpoint JSONs
+            assert results[0]["path"] == "api-docs.md"
+            assert results[0]["match_count"] == 2
 
-        assert len(results) == 1  # Only api-docs.md has endpoint JSONs
-        assert results[0]["path"] == "api-docs.md"
-        assert results[0]["match_count"] == 2
+            # Test 3: Pattern with capture groups - extract section numbers
+            print("\nTest 3: Extract section numbers from JSON")
+            pattern = r'"section":\s*(\d+)'
 
-        # Test 3: Pattern with capture groups - extract section numbers
-        print("\nTest 3: Extract section numbers from JSON")
-        pattern = r'"section":\s*(\d+)'
+            start_time = time.time()
+            results = await vault.search_by_regex(pattern, max_results=20)
+            search_time = time.time() - start_time
 
-        start_time = time.time()
-        results = await vault.search_by_regex(pattern, max_results=20)
-        search_time = time.time() - start_time
+            print(f"Found section numbers in {search_time:.3f} seconds")
 
-        print(f"Found section numbers in {search_time:.3f} seconds")
+            # Check that we got groups
+            large_doc_result = next(r for r in results if r["path"] == "large-doc.md")
+            assert large_doc_result["matches"][0]["groups"] is not None
+            print(
+                f"First few section numbers: {[m['groups'][0] for m in large_doc_result['matches'][:5]]}"
+            )
 
-        # Check that we got groups
-        large_doc_result = next(r for r in results if r["path"] == "large-doc.md")
-        assert large_doc_result["matches"][0]["groups"] is not None
-        print(
-            f"First few section numbers: {[m['groups'][0] for m in large_doc_result['matches'][:5]]}"
-        )
+            # Test 4: Performance with complex pattern
+            print("\nTest 4: Complex pattern performance")
+            # Pattern to find JSON blocks with nested objects
+            pattern = r"```json\s*\{[^}]*\{[^}]*\}[^}]*\}"
 
-        # Test 4: Performance with complex pattern
-        print("\nTest 4: Complex pattern performance")
-        # Pattern to find JSON blocks with nested objects
-        pattern = r"```json\s*\{[^}]*\{[^}]*\}[^}]*\}"
+            start_time = time.time()
+            results = await vault.search_by_regex(pattern, max_results=100)
+            search_time = time.time() - start_time
 
-        start_time = time.time()
-        results = await vault.search_by_regex(pattern, max_results=100)
-        search_time = time.time() - start_time
+            print(f"Complex pattern search completed in {search_time:.3f} seconds")
+            print(f"Found {len(results)} files with nested JSON objects")
 
-        print(f"Complex pattern search completed in {search_time:.3f} seconds")
-        print(f"Found {len(results)} files with nested JSON objects")
+            # Should complete quickly even with complex pattern
+            assert search_time < 2.0  # Should be much faster with optimizations
 
-        # Should complete quickly even with complex pattern
-        assert search_time < 2.0  # Should be much faster with optimizations
-
-        # No need to close vault anymore
-
-        print("\n✅ All JSON search tests passed!")
+            print("\n✅ All JSON search tests passed!")
+        finally:
+            # Close the SQLite connection even when an assertion above fails:
+            # an unclosed aiosqlite connection can outlive the event loop and
+            # kill its worker thread at GC time.
+            if vault.persistent_index:
+                await vault.persistent_index.close()
 
 
 if __name__ == "__main__":

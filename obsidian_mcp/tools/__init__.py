@@ -9,6 +9,9 @@ from .find_orphaned_notes import (
 from .image_management import (
     read_image,
 )
+from .index_sync import (
+    sync_vault_index,
+)
 from .link_management import (
     find_broken_links,
     get_backlinks,
@@ -67,6 +70,7 @@ __all__ = [  # noqa: RUF022
     "search_by_property",
     "list_notes",
     "list_folders",
+    "sync_vault_index",
     # Organization
     "move_note",
     "rename_note",

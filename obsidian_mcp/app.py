@@ -11,7 +11,7 @@ import os
 
 from fastmcp import FastMCP
 
-from .utils.filesystem import get_vault, init_vault
+from .utils.filesystem import ObsidianVault, get_vault, init_vault
 
 # Configure logging
 logging.basicConfig(
@@ -26,11 +26,44 @@ if not os.getenv("OBSIDIAN_VAULT_PATH"):
 # Initialize vault
 init_vault()
 
+
+def _build_instructions(vault: ObsidianVault) -> str:
+    """FastMCP server instructions, built from the live index config. Clients
+    such as Claude Code add them to the agent's system prompt -- the lever
+    that gets agents to call sync_vault_index_tool after editing the vault
+    outside this server."""
+    outside = (
+        "your own file edit tools, shell, git, the Obsidian app, sync clients, "
+        "other agents"
+    )
+    ttl = vault.cache_stat_ttl_seconds
+    if vault._auto_index_update:
+        recheck = max(vault._index_update_interval, ttl)
+        when = (
+            "before every query" if recheck == 0 else f"at most every {recheck} seconds"
+        )
+        freshness = (
+            "Index freshness: this server's own write tools keep search, tag, and "
+            f"link results current. Files changed any other way ({outside}) are "
+            f"picked up {when}. After changing vault files outside this server, "
+            "call sync_vault_index_tool once and wait for its result before the "
+            "next search, tag, or link query."
+        )
+    else:
+        tag_link_when = "before every query" if ttl == 0 else f"within {ttl} seconds"
+        freshness = (
+            "Index freshness: automatic search-index re-checks are off "
+            "(OBSIDIAN_AUTO_INDEX_UPDATE=false). This server's own write tools "
+            "keep results current, but after vault files change any other way "
+            f"({outside}) you MUST call sync_vault_index_tool before relying on "
+            "text, regex, or property search results, and wait for its result. "
+            f"Tag, link, and name results still re-check on their own {tag_link_when}."
+        )
+    return f"MCP server for direct filesystem access to Obsidian vaults.\n\n{freshness}"
+
+
 # Create FastMCP server instance
-mcp = FastMCP(
-    "obsidian-mcp",
-    instructions="MCP server for direct filesystem access to Obsidian vaults",
-)
+mcp = FastMCP("obsidian-mcp", instructions=_build_instructions(get_vault()))
 
 
 def main():

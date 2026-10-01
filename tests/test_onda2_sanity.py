@@ -206,11 +206,10 @@ class TestSearchResultMode:
                 f"---\ndescription: Note number {i}.\n---\n\nfindme content {i}\n"
             )
         v = init_vault(temp_dir)
-        # Content search is served from the persistent (SQLite) index, which
-        # only auto-refreshes in the background on a stale timer — force it
-        # synchronously so the assertions below aren't racing a background
-        # task (same pattern as test_filesystem_integration.py's fixture).
-        await v._update_search_index()
+        # Notes were written straight to disk above, so bring the SQLite index
+        # up to date before the content-search assertions (same pattern as
+        # test_filesystem_integration.py's fixture).
+        await v.sync_index()
         yield v
         # Close the SQLite connection before teardown — same pattern as
         # test_filesystem_integration.py's fixture. Without this the

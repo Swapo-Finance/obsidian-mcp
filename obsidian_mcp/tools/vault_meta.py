@@ -136,7 +136,10 @@ async def get_help(ctx: Context | None = None) -> dict[str, Any]:
             "int seconds",
             "300",
             str(vault._index_update_interval),
-            "How often the background full-text search index refreshes.",
+            "Seconds between automatic re-checks of the vault for outside changes; a due "
+            "re-check runs before the next text/regex/property search, not in the "
+            "background. 0 = re-check before every search. sync_vault_index_tool forces "
+            "one now.",
             "300",
         ),
         _env_row(
@@ -144,7 +147,7 @@ async def get_help(ctx: Context | None = None) -> dict[str, Any]:
             "int",
             "50",
             str(vault._index_batch_size),
-            "How many files the search index (re)indexes per batch.",
+            "Files per progress-log batch while the search index re-indexes changed notes.",
             "50",
         ),
         _env_row(
@@ -152,7 +155,10 @@ async def get_help(ctx: Context | None = None) -> dict[str, Any]:
             "bool",
             "true",
             str(vault._auto_index_update),
-            "Whether the search index refreshes itself automatically.",
+            "true: re-check the vault for outside changes every "
+            "OBSIDIAN_INDEX_UPDATE_INTERVAL seconds before a search. false (manual): the "
+            "index is built once, then only this server's writes and "
+            "sync_vault_index_tool update it.",
             "true",
         ),
         _env_row(
