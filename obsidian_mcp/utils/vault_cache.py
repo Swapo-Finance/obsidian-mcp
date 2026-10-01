@@ -13,6 +13,9 @@ Two auto-update paths, no new dependency (no watchdog/threads):
    pass (cheap — stats only) and re-parses just the files whose
    (mtime_ns, size) changed.
 
+sync() runs that same stat-diff immediately, ignoring the TTL — used by
+ObsidianVault.sync_index() when an agent calls sync_vault_index_tool.
+
 The cache never re-resolves a link's target from a stored "resolved"
 pointer — resolution against the current notes index happens at query time
 in the tools that consume this cache (link_management.get_backlinks /
@@ -25,9 +28,39 @@ created/renamed/deleted, because resolution isn't cached, only extraction is.
 import asyncio
 import os
 import time
+from collections.abc import Iterator
 
 from .links import extract_links_from_content
 from .vault_config import derive_note_description, derive_note_name
+
+
+def iter_md_files(
+    vault_path: str | os.PathLike[str],
+) -> Iterator[tuple[str, os.stat_result]]:
+    """(relpath, os.stat_result) for every *.md file under vault_path, with
+    "/"-separated relpaths -- matches vault.list_notes()'s "**/*.md" glob
+    (only .md, not .markdown, for consistency with the rest of the codebase).
+    Shared by VaultCache's stat-diff and ObsidianVault's SQLite index pass,
+    so both stores key notes identically.
+
+    Deliberately os.walk/os.stat instead of Path.rglob/.stat(): this runs on
+    every freshness check, and measured ~3.3x faster than the pathlib
+    equivalent on a synthetic 5,000-file tree (60ms vs 196ms/iter) --
+    pathlib's per-entry object overhead is not free on a vault-sized tree.
+    Keep this one function os.path-based; don't "fix" it to match the rest
+    of the codebase.
+    """
+    for dirpath, _dirnames, filenames in os.walk(vault_path):
+        for filename in filenames:
+            if not filename.endswith(".md"):
+                continue
+            full = os.path.join(dirpath, filename)
+            try:
+                stat = os.stat(full)
+            except OSError:
+                continue
+            relpath = os.path.relpath(full, vault_path).replace(os.sep, "/")
+            yield relpath, stat
 
 
 class VaultCache:
@@ -139,6 +172,17 @@ class VaultCache:
     # Freshness
     # ------------------------------------------------------------------
 
+    async def sync(self) -> None:
+        """Stat-diff against the disk now, ignoring
+        OBSIDIAN_CACHE_STAT_TTL_SECONDS -- the explicit resync behind
+        ObsidianVault.sync_index() (sync_vault_index_tool). No-op before the
+        first build: the first real access full-scans the current disk state
+        anyway.
+        """
+        async with self._lock:
+            if self._built:
+                await self._stat_diff_locked()
+
     async def _ensure_fresh(self) -> None:
         async with self._lock:
             if not self._built:
@@ -147,31 +191,6 @@ class VaultCache:
             ttl = self._vault.cache_stat_ttl_seconds
             if ttl == 0 or (time.monotonic() - self._snapshot_time) > ttl:
                 await self._stat_diff_locked()
-
-    def _iter_md_files(self):
-        """(relpath, os.stat_result) for every *.md file in the vault —
-        matches vault.list_notes()'s "**/*.md" glob (only .md, not
-        .markdown, for consistency with the rest of the codebase).
-
-        Deliberately os.walk/os.stat instead of the Path.rglob/.stat() used
-        elsewhere in utils/: this runs on every stat-diff cache refresh, and
-        measured ~3.3x faster than the pathlib equivalent on a synthetic
-        5,000-file tree (60ms vs 196ms/iter) -- pathlib's per-entry object
-        overhead is not free on a vault-sized tree. Keep this one function
-        os.path-based; don't "fix" it to match the rest of the codebase.
-        """
-        vault_path = self._vault.vault_path
-        for dirpath, _dirnames, filenames in os.walk(vault_path):
-            for filename in filenames:
-                if not filename.endswith(".md"):
-                    continue
-                full = os.path.join(dirpath, filename)
-                try:
-                    stat = os.stat(full)
-                except OSError:
-                    continue
-                relpath = os.path.relpath(full, vault_path).replace(os.sep, "/")
-                yield relpath, stat
 
     async def _read_text(self, relpath: str) -> str | None:
         try:
@@ -187,7 +206,7 @@ class VaultCache:
         self._note_meta.clear()
         self._stat_snapshot.clear()
 
-        for relpath, stat in self._iter_md_files():
+        for relpath, stat in iter_md_files(self._vault.vault_path):
             content = await self._read_text(relpath)
             if content is None:
                 continue
@@ -200,7 +219,7 @@ class VaultCache:
     async def _stat_diff_locked(self) -> None:
         current: dict[str, tuple[int, int]] = {}
         changed: list[str] = []
-        for relpath, stat in self._iter_md_files():
+        for relpath, stat in iter_md_files(self._vault.vault_path):
             key = (stat.st_mtime_ns, stat.st_size)
             current[relpath] = key
             if self._stat_snapshot.get(relpath) != key:
@@ -215,7 +234,6 @@ class VaultCache:
             self._deindex_note(relpath)
             if content is not None:
                 self._index_note(relpath, content)
-                current[relpath] = self._stat_snapshot.get(relpath, current[relpath])
 
         self._stat_snapshot = current
         self._snapshot_time = time.monotonic()
