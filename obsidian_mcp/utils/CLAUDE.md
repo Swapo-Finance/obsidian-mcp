@@ -13,7 +13,7 @@ without knowing which tool invoked it.
 
 ## Key patterns
 
-- `ObsidianVault` (`filesystem.py`, 1004 lines) is the only class that touches the vault. It is
+- `ObsidianVault` (`filesystem.py`, 1041 lines) is the only class that touches the vault. It is
   a process singleton created by `init_vault()` and fetched by `get_vault()`. Deliberately over
   the 350-line guideline: it's one class, and splitting it into mixins would cost pyright its
   view of `self` for a marginal navigation gain.
@@ -39,16 +39,21 @@ without knowing which tool invoked it.
   `_read_bool_env`/`_read_choice_env`/`_read_int_env` delegators to `env.py`'s pure, directly
   unit-testable readers. The one exception is `OBSIDIAN_LOG_LEVEL`, read in `app.py` before the
   vault exists.
-- `PersistentSearchIndex` (`persistent_index.py`, 1013 lines — same 350-line exception as
+- `PersistentSearchIndex` (`persistent_index.py`, 1032 lines — same 350-line exception as
   `filesystem.py` and for the same reason; a composition split was evaluated and rejected as
   highest-risk with no driver) and `VaultCache` (stat cache with TTL) are owned by
-  `ObsidianVault` — tools never touch them directly. Regex search runs each file's match in a
-  `ProcessPoolExecutor` worker under a hard timeout (`REGEX_MATCH_TIMEOUT_SECONDS`), so a
-  pathological pattern can't hang the event loop.
+  `ObsidianVault` — tools reach them through its methods, except property search (reads
+  `vault.persistent_index` directly) and the tags/links/names tools (read `vault.cache`
+  directly). Regex search runs each file's match in a `ProcessPoolExecutor` worker under a
+  hard timeout (`REGEX_MATCH_TIMEOUT_SECONDS`), so a pathological pattern can't hang the
+  event loop.
 - Index freshness: every SQLite read goes through `ObsidianVault.ensure_index_fresh()` (an
-  awaited reconcile pass when `OBSIDIAN_INDEX_UPDATE_INTERVAL` has passed); `write_note` /
-  `delete_note` write through to both stores (`cache.note_mutated`, `_index_note_mutated`);
-  `sync_index()` forces both now. A new SQLite read path must call the gate first.
+  awaited reconcile pass when `OBSIDIAN_INDEX_UPDATE_INTERVAL` has passed or the index is
+  marked dirty; manual mode, `OBSIDIAN_AUTO_INDEX_UPDATE=false`, skips the automatic pass);
+  `write_note` / `delete_note` write through to both stores (`cache.note_mutated`,
+  `_index_note_mutated`), but a write that finds `_index_lock` held (a pass running) does not
+  wait for it: it marks the index dirty and the next query reconciles; `sync_index()` forces
+  both now. A new SQLite read path must call the gate first.
 - `PersistentSearchIndex._require_db()` and `ObsidianVault._require_persistent_index()` narrow
   an `Optional` attribute to its non-`None` type by raising if it's still `None` instead of
   asserting or ignoring — follow that pattern for any new `Optional` attribute instead of

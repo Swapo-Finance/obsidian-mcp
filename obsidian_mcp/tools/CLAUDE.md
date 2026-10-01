@@ -56,7 +56,7 @@ Rules active in this directory — read them before touching code here:
   vault-wide bulk scans so one bad note can't abort the whole operation) with a concrete
   file:line count for each pattern. Catch the specific exception in new code; a genuinely
   new blanket catch needs the same bar, not just an entry copied from an existing one.
-- @.claude/rules/04-code-quality.md — `search_discovery.py` (556 lines) is the one module
+- @.claude/rules/04-code-quality.md — `search_discovery.py` (597 lines) is the one module
   here deliberately kept over the 350-line guideline — see the `get_vault()` constraint
   above and root `CLAUDE.md`'s Architecture map. Every other module stays under the limit
   by design: `organization.py`, `note_management.py`, and `link_management.py` are thin

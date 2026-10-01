@@ -511,10 +511,10 @@ Search for notes using regular expressions for advanced pattern matching.
 <details>
 <summary><b><code>sync_vault_index</code></b></summary>
 
-Force the search index and the notes cache to match the vault files on disk right now, for changes made outside this server.
+Force the search index and the notes cache to match the vault files on disk right now, for changes made outside this server. Wait for the result before searching: a search sent at the same time can read the index before the sync has started.
 
 **Parameters:**
-- `full` (default: `false`): Re-index every note instead of only the changed ones (those whose modification time or size differ). Slower; use only if results still look wrong after a normal sync
+- `full` (default: `false`): Re-index every note instead of only the changed ones (those whose modification time or size differ), and rebuild the notes cache with a full scan, which also catches edits that kept the same size and modification time. If a full sync is interrupted, the next re-check or `sync_vault_index` call resumes it instead of starting over. Slower; use only if results still look wrong after a normal sync
 
 **When to use:**
 - Right after vault files changed without this server's tools: your own file tools, shell commands, git, the Obsidian app, sync clients, or other agents
@@ -1213,7 +1213,7 @@ obsidian-mcp/
 │   ├── mcp_media_meta.py            # @mcp.tool() wrappers: add_daily_note, read_image, view_note_images, get_note_template, help
 │   ├── configure.py                 # obsidian-mcp-configure console script (Claude Desktop auto-config)
 │   ├── constants.py                 # ERROR_MESSAGES and RESPONSE_STRUCTURES
-│   ├── tools/                       # ~28 modules, one feature area each — the logic behind every *_tool wrapper above
+│   ├── tools/                       # 32 modules, one feature area each — the logic behind every *_tool wrapper above
 │   │   ├── index_sync.py            # sync_vault_index
 │   │   ├── note_management.py       # create_note/update_note/delete_note + the write-policy chain (re-exported from write_policy.py)
 │   │   ├── search_discovery.py      # search_notes, search_by_property, list_notes, list_folders (facade for search_by_date/regex + internals)
@@ -1230,7 +1230,7 @@ obsidian-mcp/
 │       ├── env.py                   # pure OBSIDIAN_* env-var readers
 │       ├── validation.py            # validators + validate_params decorator
 │       └── validators.py            # validate_note_path, sanitize_path, is_markdown_file
-├── tests/                           # 42 files + conftest.py, flat, one per feature, 534 tests total
+├── tests/                           # 42 files + conftest.py, flat, one per feature, 559 tests total
 ├── pyproject.toml                   # dependencies, [project.scripts] entry points, ruff/pyright config
 ├── CLAUDE.md                        # Instructions for Claude Code
 └── README.md
@@ -1367,10 +1367,12 @@ How quickly a change shows up depends on who made it:
 | This server's write tools | Immediate | Immediate |
 | Anything else (shell, git, the Obsidian app, sync clients, other agents' own file tools) | Within `OBSIDIAN_INDEX_UPDATE_INTERVAL` (default 300 s), or immediately after `sync_vault_index` | Within `OBSIDIAN_CACHE_STAT_TTL_SECONDS` (default 30 s), or immediately after `sync_vault_index` |
 
-- A due re-check runs before the search, not in the background, and the search waits for it — it never answers from a stale index.
-- `OBSIDIAN_AUTO_INDEX_UPDATE=false` is manual mode: the index is built on the first search, then only this server's writes and `sync_vault_index` change it. Tags, links, and names still re-check within `OBSIDIAN_CACHE_STAT_TTL_SECONDS` in both modes.
-- The server's instructions tell agents to call `sync_vault_index` after changing vault files outside the server.
-- If the vault folder is unreachable (for example, an unmounted drive), a due re-check or `sync_vault_index` fails with an error and leaves the index untouched instead of dropping every entry.
+- A due re-check runs before the search, not in the background: once a re-check is due, the search waits for it instead of answering from the old index. A search that arrives while a re-check is already running waits for that one too.
+- A re-check is due once `OBSIDIAN_INDEX_UPDATE_INTERVAL` has passed (`0` = before every search), or whenever the index is marked dirty. This server's own writes update the index immediately; one that cannot (for example, because a re-check is running at that moment) marks the index dirty, so the next search re-checks before reading.
+- `OBSIDIAN_AUTO_INDEX_UPDATE=false` is manual mode: there is no timed re-check, so the index is built on the first text or regex search and then changed only by this server's writes and `sync_vault_index`. A dirty mark (for example, from a write that could not update the index) still triggers a re-check before the next search. Tags, links, and names still re-check within `OBSIDIAN_CACHE_STAT_TTL_SECONDS` in both modes.
+- The first text or regex search on a vault without an index builds it inline, so that search is slow: measured about 8 s for 2,000 notes, 12 s for 3,000, and 74 s for 8,000 on a development machine. Run `sync_vault_index` once after setup to move that cost out of your first search. Property search only uses the index once it exists; until then it scans the notes directly.
+- The server's instructions tell agents to call `sync_vault_index` after changing vault files outside the server and to wait for its result before the next search.
+- If the vault folder is unreachable (for example, an unmounted drive or network share), text search, regex search, `sync_vault_index`, and property search (once the index exists) fail with a "Vault folder is not reachable" error and leave the index untouched instead of dropping every entry. The folder is checked again after the scan, so a drive that disappears mid-scan is caught too.
 
 #### Configuration Options:
 
@@ -1391,9 +1393,9 @@ All behavior is controlled via `OBSIDIAN_*` environment variables:
 | `OBSIDIAN_DAILY_DIR` | Folder for daily notes (`add_daily_note`) | `daily` | vault-relative/absolute/`~` path |
 | `OBSIDIAN_SEARCH_RESULT_MODE` | Default result shape for search tools | `auto` | `content\|index\|auto` |
 | `OBSIDIAN_SEARCH_INDEX_THRESHOLD` | Result count where `auto` mode switches to `index` shape | `10` | integer |
-| `OBSIDIAN_AUTO_INDEX_UPDATE` | `true`: re-check the vault for outside changes before searches every `OBSIDIAN_INDEX_UPDATE_INTERVAL` seconds. `false`: manual mode — index built once, then only server writes and `sync_vault_index` update it | `true` | boolean |
+| `OBSIDIAN_AUTO_INDEX_UPDATE` | `true`: re-check the vault for outside changes before searches every `OBSIDIAN_INDEX_UPDATE_INTERVAL` seconds. `false`: manual mode — no timed re-check; index built on the first text or regex search, then updated only by server writes, a dirty mark (a write that could not update it), and `sync_vault_index` | `true` | boolean |
 | `OBSIDIAN_INDEX_UPDATE_INTERVAL` | Seconds between automatic re-checks; a due re-check runs before the next search. `0` = before every search | `300` | integer |
-| `OBSIDIAN_INDEX_BATCH_SIZE` | Files per progress-log batch while re-indexing changed notes | `50` | integer |
+| `OBSIDIAN_INDEX_BATCH_SIZE` | Files per progress-log batch while re-indexing changed notes | `50` | integer (minimum 1) |
 | `OBSIDIAN_CACHE_STAT_TTL_SECONDS` | Max age of the in-memory stat cache before re-checking disk | `30` | integer (`0` = always re-check) |
 
 Booleans accept `true/1/yes/on` (case-insensitive) as truthy, anything else as false.
@@ -1451,6 +1453,7 @@ If you were using a previous version that required the Local REST API plugin:
 - Ensure notes have YAML frontmatter section for frontmatter tags
 - Frontmatter must include a `tags:` field (even if empty)
 - The server now properly reads both frontmatter tags and inline hashtags
+- If you edited notes outside this server (your own file tools, shell, git, the Obsidian app, a sync client), call [`sync_vault_index`](#sync_vault_index) to refresh tags, links, and search results immediately; otherwise they catch up on their own within `OBSIDIAN_CACHE_STAT_TTL_SECONDS` (tags, links, names) or `OBSIDIAN_INDEX_UPDATE_INTERVAL` (search)
 
 ## Development
 
@@ -1523,7 +1526,7 @@ If you were using a previous version that required the Local REST API plugin:
 OBSIDIAN_VAULT_PATH=/tmp/some-existing-dir pytest
 ```
 
-Tests create temporary vaults for isolation and don't require a running Obsidian instance. The suite is 42 files, flat (no subdirectories), one file per feature area, 534 tests total, plus a `conftest.py` holding one autouse fixture that resets environment variables and the vault singleton between tests.
+Tests create temporary vaults for isolation and don't require a running Obsidian instance. The suite is 42 files, flat (no subdirectories), one file per feature area, 559 tests total, plus a `conftest.py` holding one autouse fixture that resets environment variables and the vault singleton between tests.
 
 **CI:** GitHub Actions runs the suite across Python 3.10/3.11/3.12 via `uv sync --extra dev` + `uv run pytest -q`, plus an advisory (non-blocking) `ruff`/`pyright` pass scoped to files changed in the PR.
 
@@ -1576,6 +1579,12 @@ git push origin vX.Y.Z
 - 🛡️ **Configurable write-safety policies** - Frontmatter requirement, note-size limits, wikilink validation, and tag/slug kebab-normalization, each independently configurable
 - 🔎 **Config introspection** - New `help` tool reporting every `OBSIDIAN_*` environment variable's type, default, and live effective value
 - ⚡ **Token-efficient search modes** - New `mode` parameter (`content`/`index`/`auto`) and `OBSIDIAN_SEARCH_RESULT_MODE` config for lightweight search results on large result sets
+- 🔄 **Search index stays in sync with the vault** - New `sync_vault_index` tool forces the search index and the notes cache to match files changed outside the server (`full=true` rebuilds everything and resumes if interrupted). Text, regex, and property search now re-check the index before reading it (every `OBSIDIAN_INDEX_UPDATE_INTERVAL` seconds, awaited rather than in the background, and also whenever the index is marked dirty), this server's own writes update the index immediately, an unreachable vault folder (for example, an unmounted drive) now fails the search with an error instead of wiping the index, and the server's instructions tell agents to call `sync_vault_index` after editing vault files outside the server — see [Index Freshness](#index-freshness)
+- ⚠️ **Compatibility notes for the index changes**:
+  - `search_by_regex` now honors `OBSIDIAN_AUTO_INDEX_UPDATE=false` (manual mode) like the other searches
+  - On Windows, index keys switch from `\` to `/` separators, so the first search after upgrading re-indexes once
+  - Symlinked notes that point outside the vault and non-regular `*.md` entries (FIFOs, sockets, devices) are no longer indexed; symlinks that stay inside the vault keep working
+  - `OBSIDIAN_INDEX_BATCH_SIZE` has a minimum of 1 (smaller values are raised to 1)
 - 🛑 **ReDoS hardening** - `search_by_regex` now rejects patterns over 500 characters and patterns with an obvious catastrophic-backtracking shape (a quantified group nested inside another quantifier, e.g. `(a+)+`), and every per-file regex match runs in a worker process under a hard timeout, so a pathological pattern can no longer hang or block the server
 - 🔒 **Write-lock coverage expanded** - the write-serialization lock, previously covering only note create/update/delete/append, now also guards `move_note`, `rename_note`, `move_folder`, `add_tags`/`update_tags`/`remove_tags`, and `batch_update_properties`, so concurrent calls to those tools can no longer lose an update
 - 🧹 **Lint and typecheck clean** - `ruff` and `pyright` now report zero findings across the project; every remaining broad `except Exception` is a documented, deliberate exception in `pyproject.toml` rather than unaddressed debt

@@ -1,6 +1,6 @@
 # Vault index sync — design
 
-Date: 2026-09-30 · Status: approved · Branch: `feat/vault-index-sync`
+Date: 2026-09-30 · Status: approved; revised after final review · Branch: `feat/vault-index-sync`
 
 ## Problem
 
@@ -67,53 +67,106 @@ return missing, stale, or phantom results.
 | This server's write tools | immediate (write-through) | immediate (`note_mutated`) |
 | Anything else | ≤ `OBSIDIAN_INDEX_UPDATE_INTERVAL` (300 s), or immediate after `sync_vault_index_tool` | ≤ `OBSIDIAN_CACHE_STAT_TTL_SECONDS` (30 s), or immediate after `sync_vault_index_tool` |
 
-`OBSIDIAN_AUTO_INDEX_UPDATE=false` is manual mode: the index is built once on
-first use, then changes only through write-through and `sync_vault_index_tool`.
-Env var defaults are unchanged.
+Text, regex, and property search call `ensure_index_fresh()` before reading the SQLite
+index; property search does so only when the index already exists, so only text search,
+regex search, and `sync_index` ever build it. A re-check is due when the index is marked
+dirty or, with auto update on, `OBSIDIAN_INDEX_UPDATE_INTERVAL` has elapsed (`0` = before
+every search). A due re-check runs before the query and the query waits for it; a query
+that arrives while a pass or a write-through holds `_index_lock` also waits for it. Where
+write-through cannot update the index it marks it dirty instead, so a write is visible to
+the next query either way.
+
+`OBSIDIAN_AUTO_INDEX_UPDATE=false` is manual mode: the index is built on the first
+text or regex search, then changes only through write-through, a dirty mark, and
+`sync_vault_index_tool` — no timed re-check. Tags, links, and names re-check within
+`OBSIDIAN_CACHE_STAT_TTL_SECONDS` in both modes. Env var defaults are unchanged.
+
+**Dirty flag.** Anything that may leave the index behind the disk marks it dirty, and
+the next query reconciles before reading:
+
+- a write whose write-through cannot update the index: `_index_lock` is held (a pass is
+  running), the caller's spelling of the path differs from the on-disk one, or it fails;
+  `write_note` / `delete_note` also mark it on any failure or cancellation from the disk
+  write on;
+- a pass that does not finish (error or cancellation).
+
+The flag is cleared when a pass starts, so a mark made while the pass runs survives it.
+The freshness clock is monotonic, so a wall-clock change cannot make a stale index look
+fresh.
 
 ### Components
 
 **`utils/vault_cache.py`**
 - `iter_md_files(vault_path)` — module-level generator (moved out of
   `VaultCache._iter_md_files`) yielding `(posix relpath, os.stat_result)` for
-  every `*.md` file; shared with the SQLite pass.
-- `VaultCache.sync()` — forces a stat-diff now, ignoring the TTL; no-op before
-  the first build (the first access full-scans anyway).
+  every `*.md` file; shared with the SQLite pass. It skips non-regular entries
+  (FIFOs, sockets, devices named `*.md`) and symlinks that resolve outside the
+  vault; symlinks that stay inside the vault keep working.
+- `VaultCache.sync(full=False)` — forces a stat-diff now, ignoring the TTL;
+  no-op before the first build (the first access full-scans anyway). `full=True`
+  runs a full scan instead (and builds a cache that never was), which also
+  catches edits that keep size and mtime.
 - Fix: drop the line that restores the old stat key for a changed note.
 
 **`utils/persistent_index.py`**
 - `get_file_stats() -> dict[str, tuple[float, int]]` — `(mtime, size)` per
   indexed file in one `SELECT`.
+- `invalidate_all()` — one `UPDATE` setting every stored mtime to -1 (rows and
+  content stay): every file then differs from its disk stamp, so an ordinary
+  pass re-indexes all of them, and a pass that dies midway leaves the files it
+  did not reach marked stale.
 - Remove `needs_update` and `get_file_info` (their only production caller, the
   per-file check, goes away).
 - Docstring: default DB name is `mcp-search-index.db`.
 
 **`utils/filesystem.py` (`ObsidianVault`)**
-- `ensure_index_fresh()` — the single gate before any SQLite read. Fast path
-  without a lock when initialized and fresh; otherwise takes `_index_lock`,
-  initializes the index if needed (single-flight), re-checks, and runs the
-  reconcile pass *awaited*. Fresh means: built at least once, and either auto
-  update is off or `0 < elapsed <= interval`.
-- `sync_index(full=False) -> dict` — `cache.sync()`, then the pass under
-  `_index_lock`, ignoring the interval.
-- `_update_persistent_index(full=False) -> dict` — rewritten: vault folder
-  guard, `iter_md_files` + `get_file_stats`, in-memory diff, index new/changed
-  files (all files when `full`), `clear_orphaned_entries`, set
-  `_index_timestamp`, return
-  `{scanned, added, updated, removed, failed, full, duration_ms}`. Keeps the
-  `OBSIDIAN_INDEX_BATCH_SIZE` batching for progress logs; drops the sleep.
-- Write-through `_index_note_mutated(full_path, content)` — called right after
-  `cache.note_mutated` in `write_note` / `delete_note`; under `_index_lock`;
-  no-op until the index is initialized; relpath derived from the resolved
-  `full_path` (same form as the walk). Move/rename/folder moves are covered
+- `ensure_index_fresh()` — the single gate before any SQLite read. Without a
+  lock when the index is built, not dirty, the re-check is not due, and
+  `_index_lock` is free; otherwise waits for `_index_lock` (a pass commits note
+  by note, so a query that arrives while a pass or a write-through holds it
+  waits rather than read a half-updated index), initializes the index if needed
+  (single-flight; the first text or regex search builds it inline), re-checks,
+  and runs the reconcile pass *awaited*. Fresh means: built at least once, not
+  dirty, and either auto update is off or `0 < elapsed <= interval` on a
+  monotonic clock.
+- `sync_index(full=False) -> dict` — vault folder guard, `cache.sync(full)`,
+  then, under `_index_lock`, the pass, ignoring the interval. `full=True` makes
+  the cache do a full scan and calls the index's `invalidate_all()` before the
+  pass, so the normal pass re-indexes every note and an interrupted full sync is
+  finished by the next pass instead of starting over. Returns the pass's counts
+  plus `full`.
+- `_update_persistent_index() -> dict` — rewritten: vault folder guard, clear
+  the dirty flag, `get_file_stats` + `iter_md_files`, guard again (a folder that
+  vanished mid-walk reads as an empty vault, and sweeping against it would drop
+  every row), in-memory diff, index new/changed files, `clear_orphaned_entries`,
+  refresh the freshness clock, return
+  `{scanned, added, updated, removed, failed, duration_ms}`. A pass that does
+  not finish (error or cancellation) marks the index dirty again. Keeps the
+  `OBSIDIAN_INDEX_BATCH_SIZE` batching for progress logs (raised to at least 1);
+  drops the sleep.
+- Write-through `_index_note_mutated` — called right after `cache.note_mutated`
+  in `write_note` / `delete_note`; no-op until the index is initialized. It
+  marks the index dirty and returns, touching no row, when the caller's spelling
+  of the path differs from the on-disk one (NFC vs NFD, or case on APFS) or when
+  `_index_lock` is held: it does not wait for a running pass, whose walk may
+  predate the write. Otherwise it takes `_index_lock`; a write stats the file
+  first and re-reads it from disk (not the caller's in-memory content), so the
+  stored text always matches the stored (mtime, size), and the row is keyed by
+  the on-disk spelling, the walk's form. A failure there is logged and marks the
+  index dirty; `write_note` / `delete_note` mark it dirty on any failure or
+  cancellation from the disk write on. Move/rename/folder moves are covered
   because they are `write_note` + `delete_note`.
 - `search_notes` and `search_by_regex` call `ensure_index_fresh()` instead of
   their own gates. Removed: `_start_background_index_update`,
   `_update_search_index_async`, `_update_search_index`,
   `_index_update_in_progress`, `_index_update_task`.
 
-**`tools/search_property_engine.py`** — when the persistent index exists, call
-`vault.ensure_index_fresh()` before querying it.
+**`tools/search_property_engine.py`** — when the persistent index exists, calls
+`vault.ensure_index_fresh()` before reading it, outside the `try` that guards the
+index query: a gate failure (an unreachable vault) surfaces like it does for text
+and regex search instead of falling through to the manual scan, which would
+answer from a folder it cannot see. Property search never builds the index;
+until a text or regex search or a sync has, it uses that manual scan.
 
 **`sync_vault_index_tool(full=False)`** — standard tool pair:
 `tools/index_sync.py` (`sync_vault_index`), export in `tools/__init__.py`,
@@ -122,20 +175,32 @@ wrapper in `mcp_search.py`, re-export in `server.py`. Returns
 (`RESPONSE_STRUCTURES["index_sync"]`). Docstring "When to use": after vault
 files changed outside this server; when a result contradicts the disk. "When
 NOT to use": after this server's own write tools; routinely before every search.
+`full=True` also rebuilds the notes cache with a full scan and resumes if
+interrupted (see `sync_index`).
 
 **Agent guidance** — `app.py` builds the FastMCP `instructions` from the live
 config: which changes are tracked automatically, the real interval, and "after
-changing vault files outside this server, call `sync_vault_index_tool` before
-the next search, tag, or link query". Manual mode says the call is required.
+changing vault files outside this server, call `sync_vault_index_tool` and wait
+for its result before the next search, tag, or link query". Manual mode says the
+call is required for text, regex, and property search results (tag, link, and
+name results still re-check on their own).
 The `help_tool` catalog, README, and CLAUDE.md files document the model.
 
 ### Error handling
 
 - Write-through failure never fails the write (the file is already on disk):
-  log a warning and reset `_index_timestamp` so the next query reconciles.
-- Vault folder missing (unmounted drive/share): the pass raises `RuntimeError`
-  with `ERROR_MESSAGES["vault_unavailable"]` **before** touching the index —
-  today an empty walk would orphan and delete every entry.
+  log a warning and mark the index dirty so the next query reconciles. A
+  cancellation after the write reached the disk marks it dirty too.
+- Vault folder not reachable (unmounted drive/share): the pass raises
+  `RuntimeError` with `ERROR_MESSAGES["vault_unavailable"]` ("Vault folder is not
+  reachable") **before** touching the index — today an empty walk would orphan
+  and delete every entry — and checks the folder again after the walk.
+  `sync_index` checks first too, before it touches the cache. Text and regex
+  search and `sync_vault_index_tool` surface this error, and so does property
+  search once the index exists; the wrappers turn it into `ToolError`.
+- A pass that does not finish (error or cancellation) marks the index dirty
+  again, so the next query resumes it. A `full` sync resumes the same way
+  because its stored stats were invalidated up front.
 - Per-file read/index failure: logged, counted in `failed`, pass continues.
 - Index init failure: existing `RuntimeError` messages; wrappers turn them
   into `ToolError`.
@@ -144,15 +209,21 @@ The `help_tool` catalog, README, and CLAUDE.md files document the model.
 
 Lock order is `write_lock` → `_index_lock` (write tools), and `cache._lock` is
 never held together with `_index_lock`. The pass never takes `write_lock`, so
-no cycle. Write-through waiting on `_index_lock` prevents a concurrent pass
-from deleting a just-written note as an orphan.
+no cycle. A write that finds `_index_lock` held does not wait for the pass
+holding it, so it does not block behind a long one (a first build of a large
+vault can take over a minute): the write-through marks the index dirty instead,
+and the next query reconciles. `asyncio.Lock` has no try-acquire, so the check
+is `locked()`; a write that arrives in the instant a pass releases the lock can
+still queue behind one lock handoff. Queries do the opposite: a query that
+arrives while a pass or a write-through holds `_index_lock` waits for it. The
+dirty flag is cleared when a pass starts, so a mark made mid-pass is not lost.
 
 ## Testing
 
 TDD. New `tests/test_index_sync.py` covers, at the vault level: outside
 create / modify / delete / rename visible after `sync_index`; interval expiry
-reconciles before a query; interval 0 reconciles every query; manual mode only
-syncs on demand; MCP create / update / delete / move searchable without sync;
+reconciles before a query; interval 0 reconciles every query; manual mode never
+re-checks on the interval; MCP create / update / delete / move searchable without sync;
 write-through failure does not fail the write and self-heals; missing vault
 folder raises and keeps the index; `full=True` re-indexes everything;
 concurrent first queries initialize once. Plus: property search sees an
@@ -163,8 +234,14 @@ tool-count assertions go from 30 to 31.
 
 ## Compatibility
 
-- No env var added or removed; defaults unchanged.
+- No env var added or removed; defaults unchanged. `OBSIDIAN_INDEX_BATCH_SIZE`
+  now has a minimum of 1 (smaller values are raised to 1).
 - `search_by_regex` now honors `OBSIDIAN_AUTO_INDEX_UPDATE=false` (manual
   mode) like the other searches.
 - On Windows, index keys switch from `\` to `/` separators (same form the cache
   uses); the first pass re-indexes once.
+- Symlinked notes that resolve outside the vault and non-regular `*.md` entries
+  (FIFOs, sockets, devices) are no longer indexed; symlinks that stay inside the
+  vault keep working.
+- Property search now reports an unreachable vault folder as an error once the
+  index exists, like text and regex search.
