@@ -22,6 +22,7 @@ import pytest_asyncio
 
 from obsidian_mcp.tools.note_management import create_note, delete_note, update_note
 from obsidian_mcp.tools.organization import move_note
+from obsidian_mcp.tools.search_discovery import search_by_property
 from obsidian_mcp.utils.filesystem import init_vault
 from obsidian_mcp.utils.persistent_index import PersistentSearchIndex
 
@@ -655,3 +656,19 @@ class TestCancellation:
         monkeypatch.undo()
 
         assert await _paths(manual_vault, "resilient") == {"kept.md"}
+
+
+class TestPropertySearchFreshness:
+    @pytest.mark.asyncio
+    async def test_property_search_sees_outside_frontmatter_change(self, auto_vault):
+        _write(auto_vault, "task.md", "---\nstatus: open\n---\n# Task\n")
+        await auto_vault.sync_index()  # the index exists, so property search uses it
+
+        before = await search_by_property("status", "done")
+        assert [r["path"] for r in before["results"]] == []
+
+        _write(auto_vault, "task.md", "---\nstatus: done\n---\n# Task, finished\n")
+        _age_last_pass(auto_vault)
+
+        after = await search_by_property("status", "done")
+        assert [r["path"] for r in after["results"]] == ["task.md"]

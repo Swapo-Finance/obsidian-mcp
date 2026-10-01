@@ -221,6 +221,10 @@ async def _search_by_property(
     # Check if we can use the persistent index for property search
     if hasattr(vault, "persistent_index") and vault.persistent_index:
         try:
+            # Same freshness gate as text/regex search: a due reconcile pass
+            # runs (awaited) before the index is read.
+            await vault.ensure_index_fresh()
+
             # Use persistent index for efficient property search
             results_from_index = await vault.persistent_index.search_by_property(
                 prop_name,
