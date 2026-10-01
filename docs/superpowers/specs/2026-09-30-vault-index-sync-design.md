@@ -213,14 +213,18 @@ no cycle. A write that finds `_index_lock` held does not wait for the pass
 holding it, so it does not block behind a long one (a first build of a large
 vault can take over a minute): the write-through marks the index dirty instead,
 and the next query reconciles. `asyncio.Lock` has no try-acquire, so the check
-is `locked()`; a write that arrives in the instant a pass releases the lock can
-still queue behind one lock handoff. Queries do the opposite: a query that
+is `locked()`, and that is not airtight: the lock is FIFO, so a write that
+arrives right after a pass releases it queues behind every query already
+waiting, and the first of those may run one incremental reconcile pass (if the
+index is dirty). The wait is bounded by that one incremental pass plus quick
+handoffs. Queries do the opposite: a query that
 arrives while a pass or a write-through holds `_index_lock` waits for it. The
 dirty flag is cleared when a pass starts, so a mark made mid-pass is not lost.
 
 ## Testing
 
-TDD. New `tests/test_index_sync.py` covers, at the vault level: outside
+TDD. New `tests/test_index_sync.py` and `tests/test_index_sync_writes.py` (the
+write path and its concurrency) cover, at the vault level: outside
 create / modify / delete / rename visible after `sync_index`; interval expiry
 reconciles before a query; interval 0 reconciles every query; manual mode never
 re-checks on the interval; MCP create / update / delete / move searchable without sync;
