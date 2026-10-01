@@ -54,30 +54,7 @@ class TestPersistentIndex:
         )
 
         # Check that file was indexed
-        file_info = await index.get_file_info("test.md")
-        assert file_info is not None
-        assert file_info["mtime"] == 1234567890.0
-        assert file_info["size"] == 100
-
-        await index.close()
-
-    @pytest.mark.asyncio
-    async def test_incremental_update(self, test_vault_dir):
-        """Test that only changed files are re-indexed."""
-        index = PersistentSearchIndex(Path(test_vault_dir))
-        await index.initialize()
-
-        # Index a file
-        await index.index_file("test.md", "Content 1", 1000.0, 10)
-
-        # Check that it doesn't need update with same mtime/size
-        assert not await index.needs_update("test.md", 1000.0, 10)
-
-        # Check that it needs update with different mtime
-        assert await index.needs_update("test.md", 2000.0, 10)
-
-        # Check that it needs update with different size
-        assert await index.needs_update("test.md", 1000.0, 20)
+        assert await index.get_file_stats() == {"test.md": (1234567890.0, 100)}
 
         await index.close()
 
@@ -224,7 +201,7 @@ class TestPersistentIndex:
         # committed by this next, unrelated write.
         await index.index_file("other.md", "other content", 2000.0, 20)
 
-        assert await index.get_file_info("note.md") is None, (
+        assert "note.md" not in await index.get_file_stats(), (
             "partial write from the failed call leaked through"
         )
 
@@ -263,7 +240,7 @@ class TestPersistentIndex:
 
         await index.index_file("other.md", "other content", 2000.0, 20)
 
-        assert await index.get_file_info("note.md") is not None, (
+        assert "note.md" in await index.get_file_stats(), (
             "partial delete leaked through despite the error"
         )
 
@@ -305,8 +282,9 @@ class TestPersistentIndex:
 
         await index.index_file("other.md", "other content", 2000.0, 20)
 
-        assert await index.get_file_info("orphan_a.md") is not None
-        assert await index.get_file_info("orphan_b.md") is not None
+        stored = await index.get_file_stats()
+        assert "orphan_a.md" in stored
+        assert "orphan_b.md" in stored
 
         await index.close()
 

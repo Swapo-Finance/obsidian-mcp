@@ -107,6 +107,12 @@ ERROR_MESSAGES = {
         "Invalid date: '{date}'. "
         "Must be ISO format YYYY-MM-DD (e.g. '2025-01-15'), or omit it to use today's date"
     ),
+    "vault_unavailable": (
+        "Vault folder is not reachable: '{path}'. The search index was left untouched. "
+        "To fix: 1) Check that the drive or network share holding the vault is mounted, "
+        "2) Check that OBSIDIAN_VAULT_PATH points at the vault folder, "
+        "3) Retry once the folder is back"
+    ),
 }
 
 # Standardized response structures for reasoning-friendly consistency

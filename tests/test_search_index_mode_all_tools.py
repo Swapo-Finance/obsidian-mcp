@@ -35,11 +35,10 @@ async def vault_many_notes():
             f"---\nstatus: active\n---\n\nTODO: fix item {i}\n"
         )
     v = init_vault(temp_dir)
-    # search_by_regex blocks on a stale/None persistent-index timestamp and
-    # would self-update anyway, but pre-warming here (same pattern as
-    # test_onda2_sanity.py's fixture) keeps every test in this file
+    # The first search would build the index anyway, but syncing here (same
+    # pattern as test_onda2_sanity.py's fixture) keeps every test in this file
     # deterministic regardless of call order.
-    await v._update_search_index()
+    await v.sync_index()
     yield v
     if v.persistent_index:
         await v.persistent_index.close()

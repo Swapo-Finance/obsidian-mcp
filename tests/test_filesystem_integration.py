@@ -106,7 +106,7 @@ And another style:
 
         current_vault = get_vault()
         if current_vault:
-            await current_vault._update_search_index()
+            await current_vault.sync_index()
 
         yield vault
 
@@ -282,8 +282,7 @@ This content has been updated.
 
         vault = get_vault()
         if vault:
-            vault._index_timestamp = None  # Force re-index
-            await vault._update_search_index()
+            await vault.sync_index()
 
         # Search with small limit
         result_limited = await search_notes("searchtest", max_results=5)

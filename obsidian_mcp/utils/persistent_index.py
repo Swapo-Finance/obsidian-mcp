@@ -362,37 +362,6 @@ class PersistentSearchIndex:
             )
         return self.db
 
-    async def get_file_info(self, filepath: str) -> dict[str, Any] | None:
-        """Get cached file information."""
-        db = self._require_db()
-        async with self._lock:
-            cursor = await db.execute(
-                "SELECT mtime, size, content_hash, last_indexed FROM file_index WHERE filepath = ?",
-                (filepath,),
-            )
-            row = await cursor.fetchone()
-
-            if row:
-                return {
-                    "mtime": row[0],
-                    "size": row[1],
-                    "content_hash": row[2],
-                    "last_indexed": row[3],
-                }
-            return None
-
-    async def needs_update(
-        self, filepath: str, current_mtime: float, current_size: int
-    ) -> bool:
-        """Check if a file needs to be re-indexed."""
-        file_info = await self.get_file_info(filepath)
-
-        if not file_info:
-            return True
-
-        # Check if file has been modified
-        return file_info["mtime"] != current_mtime or file_info["size"] != current_size
-
     async def get_file_stats(self) -> dict[str, tuple[float, int]]:
         """(mtime, size) of every indexed file in one query -- what
         ObsidianVault's reconcile pass diffs against the vault on disk,

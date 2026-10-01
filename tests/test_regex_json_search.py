@@ -118,7 +118,7 @@ More text after the JSON block.
 
         # Build index
         print("Building index...")
-        await vault._update_search_index()
+        await vault.sync_index()
 
         # Test 1: Simple JSON block pattern (what the user was trying)
         print("\nTest 1: Simple JSON block search")
@@ -191,7 +191,10 @@ More text after the JSON block.
         # Should complete quickly even with complex pattern
         assert search_time < 2.0  # Should be much faster with optimizations
 
-        # No need to close vault anymore
+        # Close the SQLite connection: an unclosed aiosqlite connection can
+        # outlive the event loop and kill its worker thread at GC time.
+        if vault.persistent_index:
+            await vault.persistent_index.close()
 
         print("\n✅ All JSON search tests passed!")
 

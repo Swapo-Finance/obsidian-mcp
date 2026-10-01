@@ -26,6 +26,7 @@ import shutil
 import tempfile
 
 import pytest
+import pytest_asyncio
 
 from obsidian_mcp.tools.batch_properties import batch_update_properties
 from obsidian_mcp.tools.note_management import create_note, read_note
@@ -33,19 +34,28 @@ from obsidian_mcp.tools.tag_editing import add_tags
 from obsidian_mcp.utils.filesystem import init_vault
 
 
-@pytest.fixture
-def make_vault():
+@pytest_asyncio.fixture
+async def make_vault():
     created_dirs = []
+    vaults = []
 
     def _make(tag_style="as-is"):
         temp_dir = tempfile.mkdtemp(prefix="obsidian_batch_props_")
         created_dirs.append(temp_dir)
         os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"
         os.environ["OBSIDIAN_TAG_STYLE"] = tag_style
-        return init_vault(temp_dir)
+        vault = init_vault(temp_dir)
+        vaults.append(vault)
+        return vault
 
     yield _make
 
+    # Close the SQLite connection of every vault a test opened an index on
+    # (query-based selection searches the index); an unclosed aiosqlite
+    # connection can outlive the event loop and kill its worker thread.
+    for vault in vaults:
+        if vault.persistent_index:
+            await vault.persistent_index.close()
     for key in ("OBSIDIAN_REQUIRE_FRONTMATTER", "OBSIDIAN_TAG_STYLE"):
         os.environ.pop(key, None)
     for d in created_dirs:
