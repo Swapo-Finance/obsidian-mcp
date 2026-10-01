@@ -166,6 +166,17 @@ RESPONSE_STRUCTURES = {
             "links_updated": int,  # Number of links updated
         },
     },
+    # Index sync (sync_vault_index_tool)
+    "index_sync": {
+        "success": True,
+        "scanned": int,  # Notes found on disk
+        "added": int,  # Notes indexed for the first time
+        "updated": int,  # Notes re-indexed (changed, or all with full=True)
+        "removed": int,  # Index entries dropped because the note is gone
+        "failed": int,  # Notes that could not be read or indexed
+        "full": bool,  # Whether every note was re-indexed
+        "duration_ms": int,  # Wall time of the pass
+    },
     # Error response
     "error": {
         "success": False,
