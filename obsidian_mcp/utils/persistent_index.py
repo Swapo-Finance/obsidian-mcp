@@ -469,7 +469,11 @@ class PersistentSearchIndex:
                         )
 
                 await db.commit()
-            except Exception:
+            # BaseException, not Exception: a client interrupt cancels the
+            # awaiting task with CancelledError, and a transaction left open
+            # here would be committed, half applied, by the next commit on
+            # this shared connection.
+            except BaseException:
                 await db.rollback()
                 raise
 
@@ -506,7 +510,7 @@ class PersistentSearchIndex:
             try:
                 await self._remove_file_locked(db, filepath)
                 await db.commit()
-            except Exception:
+            except BaseException:  # incl. CancelledError, see index_file
                 await db.rollback()
                 raise
 
@@ -875,7 +879,7 @@ class PersistentSearchIndex:
                 for filepath in orphaned:
                     await self._remove_file_locked(db, filepath)
                 await db.commit()
-            except Exception:
+            except BaseException:  # incl. CancelledError, see index_file
                 await db.rollback()
                 raise
 

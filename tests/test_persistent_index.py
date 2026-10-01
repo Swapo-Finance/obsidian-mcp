@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Test persistent search index functionality."""
 
+import asyncio
 import shutil
 
 # Add parent directory to path
@@ -15,6 +16,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from obsidian_mcp.utils.persistent_index import PersistentSearchIndex
 
+# A client interrupt raises CancelledError, a BaseException: a rollback
+# guarded by `except Exception` misses it. Every rollback test runs with both.
+ROLLS_BACK_ON = pytest.mark.parametrize(
+    "failure", [RuntimeError, asyncio.CancelledError], ids=["error", "cancelled"]
+)
+
 
 class TestPersistentIndex:
     """Test suite for persistent search index."""
@@ -25,6 +32,15 @@ class TestPersistentIndex:
         temp_dir = tempfile.mkdtemp(prefix="obsidian_test_index_")
         yield temp_dir
         shutil.rmtree(temp_dir)
+
+    @pytest_asyncio.fixture
+    async def index(self, test_vault_dir):
+        """An initialized index, closed at teardown even when the test fails:
+        an unclosed aiosqlite connection can hang interpreter exit."""
+        index = PersistentSearchIndex(Path(test_vault_dir))
+        await index.initialize()
+        yield index
+        await index.close()
 
     @pytest.mark.asyncio
     async def test_index_creation(self, test_vault_dir):
@@ -170,14 +186,13 @@ class TestPersistentIndex:
         await index.close()
 
     @pytest.mark.asyncio
+    @ROLLS_BACK_ON
     async def test_index_file_rolls_back_on_mid_sequence_error(
-        self, test_vault_dir, monkeypatch
+        self, index, monkeypatch, failure
     ):
         """Finding 3 (code review): a failure partway through index_file()'s
         statement sequence must not leave a partial write sitting in an open
         transaction for a later, unrelated commit() to silently fold in."""
-        index = PersistentSearchIndex(Path(test_vault_dir))
-        await index.initialize()
         db = index._require_db()
 
         original_execute = db.execute
@@ -188,11 +203,11 @@ class TestPersistentIndex:
             # Let the file_index INSERT OR REPLACE (1st statement) succeed,
             # then fail on the very next one (the file_search DELETE).
             if calls["n"] == 2:
-                raise RuntimeError("simulated failure")
+                raise failure("simulated failure")
             return await original_execute(sql, *args, **kwargs)
 
         monkeypatch.setattr(db, "execute", flaky_execute)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(failure):
             await index.index_file("note.md", "content", 1000.0, 10)
         monkeypatch.undo()
 
@@ -205,18 +220,15 @@ class TestPersistentIndex:
             "partial write from the failed call leaked through"
         )
 
-        await index.close()
-
     @pytest.mark.asyncio
+    @ROLLS_BACK_ON
     async def test_remove_file_rolls_back_on_mid_sequence_error(
-        self, test_vault_dir, monkeypatch
+        self, index, monkeypatch, failure
     ):
         """Finding 3 (code review): same rollback guarantee for remove_file()
         -- a failure partway through must not leave file_index missing a row
         while file_search/file_properties still have it (worse than doing
         nothing: a corrupted, inconsistent index)."""
-        index = PersistentSearchIndex(Path(test_vault_dir))
-        await index.initialize()
         await index.index_file(
             "note.md", "content", 1000.0, 10, {"frontmatter": {"status": "active"}}
         )
@@ -230,11 +242,11 @@ class TestPersistentIndex:
             # Let the file_index DELETE (1st statement) succeed, then fail
             # on the very next one (the file_search DELETE).
             if calls["n"] == 2:
-                raise RuntimeError("simulated failure")
+                raise failure("simulated failure")
             return await original_execute(sql, *args, **kwargs)
 
         monkeypatch.setattr(db, "execute", flaky_execute)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(failure):
             await index.remove_file("note.md")
         monkeypatch.undo()
 
@@ -244,17 +256,14 @@ class TestPersistentIndex:
             "partial delete leaked through despite the error"
         )
 
-        await index.close()
-
     @pytest.mark.asyncio
+    @ROLLS_BACK_ON
     async def test_clear_orphaned_entries_rolls_back_on_mid_sequence_error(
-        self, test_vault_dir, monkeypatch
+        self, index, monkeypatch, failure
     ):
         """Finding 3 (code review): clear_orphaned_entries() batches all
         orphans into one commit/rollback -- a failure partway through the
         batch must not leave some orphans deleted and others not."""
-        index = PersistentSearchIndex(Path(test_vault_dir))
-        await index.initialize()
         await index.index_file("keep.md", "keep", 1000.0, 10)
         await index.index_file("orphan_a.md", "a", 1000.0, 10)
         await index.index_file("orphan_b.md", "b", 1000.0, 10)
@@ -272,11 +281,11 @@ class TestPersistentIndex:
             # already-executed deletes get rolled back too, not just the
             # interrupted second one.
             if calls["n"] == 5:
-                raise RuntimeError("simulated failure")
+                raise failure("simulated failure")
             return await original_execute(sql, *args, **kwargs)
 
         monkeypatch.setattr(db, "execute", flaky_execute)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(failure):
             await index.clear_orphaned_entries({"keep.md"})
         monkeypatch.undo()
 
@@ -285,8 +294,6 @@ class TestPersistentIndex:
         stored = await index.get_file_stats()
         assert "orphan_a.md" in stored
         assert "orphan_b.md" in stored
-
-        await index.close()
 
 
 if __name__ == "__main__":

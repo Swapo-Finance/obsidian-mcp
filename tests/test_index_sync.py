@@ -14,6 +14,8 @@ import asyncio
 import os
 import shutil
 import tempfile
+import time
+import unicodedata
 
 import pytest
 import pytest_asyncio
@@ -184,6 +186,23 @@ class TestAutomaticReconcileBeforeQueries:
         results = await auto_vault.search_by_regex(r"pattern-\d+")
         assert {r["path"] for r in results} == {"late.md"}
 
+    @pytest.mark.asyncio
+    async def test_wall_clock_stepping_back_does_not_keep_the_index_fresh(
+        self, auto_vault, monkeypatch
+    ):
+        _write(auto_vault, "seed.md", "seed")
+        await _paths(auto_vault, "seed")  # builds the index
+
+        _write(auto_vault, "late.md", "late arrival")
+        _age_last_pass(auto_vault)
+        # The interval has elapsed, but the wall clock was just stepped back
+        # (NTP correction, manual change): a freshness rule that reads it
+        # would see a negative elapsed time and keep serving the stale index.
+        real_time = time.time
+        monkeypatch.setattr(time, "time", lambda: real_time() - 10_000)
+
+        assert await _paths(auto_vault, "arrival") == {"late.md"}
+
 
 class TestManualMode:
     @pytest.mark.asyncio
@@ -318,6 +337,44 @@ class TestPassEdgeCases:
         assert await _paths(auto_vault, "precious") == {"precious.md"}
         assert "precious.md" in await auto_vault.cache.get_all_relpaths()
 
+    @pytest.mark.asyncio
+    async def test_due_pass_on_a_missing_folder_raises_and_keeps_every_row(
+        self, always_vault, monkeypatch
+    ):
+        """The guard at the start of the pass itself: with interval 0 every
+        query runs one, and a pass that walked a vanished folder would sweep
+        every row as an orphan."""
+        _write(always_vault, "precious.md", "precious words")
+        await _paths(always_vault, "precious")  # builds the index
+        index = always_vault._require_persistent_index()
+        before = await index.get_file_stats()
+
+        monkeypatch.setattr(
+            always_vault, "vault_path", always_vault.vault_path / "unmounted"
+        )
+        with pytest.raises(RuntimeError, match="not reachable"):
+            await always_vault.search_notes("precious")
+        monkeypatch.undo()
+
+        assert await index.get_file_stats() == before
+
+    @pytest.mark.asyncio
+    async def test_first_query_on_a_missing_folder_raises_before_creating_an_index(
+        self, auto_vault, monkeypatch
+    ):
+        """The guard before index initialization: without it the server would
+        build a database (or fail with an opaque mkdir error) under a path
+        that is not the vault."""
+        monkeypatch.setattr(
+            auto_vault, "vault_path", auto_vault.vault_path / "unmounted"
+        )
+        with pytest.raises(RuntimeError, match="not reachable"):
+            await auto_vault.search_notes("anything")
+        monkeypatch.undo()
+
+        assert auto_vault.persistent_index is None
+        assert not (auto_vault.vault_path / "unmounted").exists()
+
 
 class TestConcurrentFirstQueries:
     @pytest.mark.asyncio
@@ -339,3 +396,262 @@ class TestConcurrentFirstQueries:
 
         assert inits == 1
         assert [len(r) for r in results] == [1, 1]
+
+
+class TestWriteThroughWaitsForAPass:
+    @pytest.mark.asyncio
+    async def test_write_landing_after_the_walk_is_not_swept_as_an_orphan(
+        self, manual_vault, monkeypatch
+    ):
+        """The pass snapshots the disk, then indexes. An MCP write that lands
+        after the snapshot is not in it, so unless write-through waits for
+        _index_lock the pass's orphan sweep deletes the fresh row."""
+        await _paths(manual_vault, "anything")  # build the (empty) index
+        _write(manual_vault, "seed.md", "seed words")  # the pass has this to index
+        pass_is_parked = asyncio.Event()
+        release_pass = asyncio.Event()
+        original_index_file = PersistentSearchIndex.index_file
+
+        async def gated_index_file(self, filepath, *args, **kwargs):
+            if filepath == "seed.md":  # the pass's call, not write-through's
+                pass_is_parked.set()
+                await release_pass.wait()
+            return await original_index_file(self, filepath, *args, **kwargs)
+
+        monkeypatch.setattr(PersistentSearchIndex, "index_file", gated_index_file)
+        sync = asyncio.create_task(manual_vault.sync_index())
+        await asyncio.wait_for(pass_is_parked.wait(), timeout=5)  # walked, parked
+        write = asyncio.create_task(create_note("new.md", "# New\n\nplatypus sighting"))
+        await asyncio.sleep(0.1)  # let the write hit the disk and reach the index
+        release_pass.set()
+        await asyncio.gather(sync, write)
+        monkeypatch.undo()
+
+        assert await _paths(manual_vault, "platypus") == {"new.md"}
+
+
+def _distinct_spellings(relpath: str) -> tuple[str, str]:
+    """(NFC, NFD) spellings of relpath, proven to be different strings."""
+    nfc = unicodedata.normalize("NFC", relpath)
+    nfd = unicodedata.normalize("NFD", relpath)
+    assert nfc != nfd, "relpath has no composable accent"
+    return nfc, nfd
+
+
+async def _ascii_paths(vault, query: str) -> set[str]:
+    """_paths with non-ASCII escaped, so two spellings of one name stay
+    distinguishable in an assertion failure."""
+    return {ascii(path) for path in await _paths(vault, query)}
+
+
+class TestWriteThroughKeepsTheOnDiskSpelling:
+    """APFS and NTFS accept several spellings of one file (case, Unicode
+    normalization) while the pass's walk keys the index by the spelling the
+    disk lists. Write-through must never key a row by another spelling -- a
+    duplicate or ghost row until the next pass -- so it forces a reconcile
+    instead. Each test probes the filesystem and skips where the spellings
+    name different files (e.g. Linux ext4)."""
+
+    @pytest.mark.asyncio
+    async def test_nfc_spelled_update_of_an_nfd_note_leaves_one_correct_row(
+        self, manual_vault
+    ):
+        nfc, nfd = _distinct_spellings("notas/café.md")
+        _write(manual_vault, nfd, "cafezinho quente")
+        if not (manual_vault.vault_path / nfc).exists():
+            pytest.skip("filesystem distinguishes NFC and NFD spellings")
+        assert await _ascii_paths(manual_vault, "cafezinho") == {ascii(nfd)}
+
+        await update_note(nfc, "# Café\n\nlatte morno")
+
+        assert await _ascii_paths(manual_vault, "latte") == {ascii(nfd)}
+        assert await _ascii_paths(manual_vault, "cafezinho") == set()
+
+    @pytest.mark.asyncio
+    async def test_nfc_spelled_delete_of_an_nfd_note_leaves_no_ghost_row(
+        self, manual_vault
+    ):
+        nfc, nfd = _distinct_spellings("notas/café.md")
+        _write(manual_vault, nfd, "cafezinho quente")
+        if not (manual_vault.vault_path / nfc).exists():
+            pytest.skip("filesystem distinguishes NFC and NFD spellings")
+        assert await _ascii_paths(manual_vault, "cafezinho") == {ascii(nfd)}
+
+        await delete_note(nfc)
+
+        assert not (manual_vault.vault_path / nfd).exists()
+        assert await _ascii_paths(manual_vault, "cafezinho") == set()
+
+    @pytest.mark.asyncio
+    async def test_matching_spelling_is_written_and_dropped_directly(
+        self, manual_vault
+    ):
+        """The normal path stays direct: the row is written (and dropped) by
+        write-through itself and no reconcile is forced. Asserted on the index,
+        not through a search, which would reconcile and hide the difference
+        (e.g. a delete that checks the spelling after the unlink sees a missing
+        entry and takes the reconcile path every time)."""
+        await _paths(manual_vault, "anything")  # build the index
+        index = manual_vault._require_persistent_index()
+        built_at = manual_vault._index_timestamp
+
+        await create_note("Plain.md", "# Plain\n\nbadger")
+        assert "Plain.md" in await index.get_file_stats()
+
+        await delete_note("Plain.md")
+        assert "Plain.md" not in await index.get_file_stats()
+        assert manual_vault._index_timestamp == built_at
+        assert not manual_vault._index_dirty
+
+    @pytest.mark.asyncio
+    async def test_case_variant_write_keeps_the_on_disk_spelling(self, manual_vault):
+        _write(manual_vault, "Notes/Foo.md", "giraffe original")
+        if not (manual_vault.vault_path / "notes" / "foo.md").exists():
+            pytest.skip("filesystem is case-sensitive")
+        assert await _paths(manual_vault, "giraffe") == {"Notes/Foo.md"}
+
+        await update_note("notes/foo.md", "# Foo\n\nokapi replacement")
+
+        assert await _paths(manual_vault, "okapi") == {"Notes/Foo.md"}
+        assert await _paths(manual_vault, "giraffe") == set()
+
+
+class TestCancellation:
+    """A client interrupt cancels the awaiting task with CancelledError, which
+    is a BaseException: `except Exception` handlers do not see it."""
+
+    @pytest.mark.asyncio
+    async def test_cancelled_pass_rolls_the_note_back_and_the_next_sync_repairs_it(
+        self, manual_vault, monkeypatch
+    ):
+        _write(manual_vault, "doc.md", "---\nstatus: draft\n---\n\nbody")
+        await manual_vault.sync_index()
+        _write(manual_vault, "doc.md", "---\nstatus: published\n---\n\nbody")
+
+        def cancelled(self, value):
+            raise asyncio.CancelledError
+
+        # index_file has already replaced the note's stored mtime/size and
+        # deleted its property rows when it reaches this call.
+        monkeypatch.setattr(
+            PersistentSearchIndex, "_determine_property_type", cancelled
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await manual_vault.sync_index()
+        monkeypatch.undo()
+
+        stats = await manual_vault.sync_index()
+
+        assert stats["updated"] == 1
+        index = manual_vault._require_persistent_index()
+        published = await index.search_by_property("status", "=", "published")
+        assert [hit["filepath"] for hit in published] == ["doc.md"]
+        assert await index.search_by_property("status", "=", "draft") == []
+
+    @pytest.mark.asyncio
+    async def test_write_through_cancelled_while_waiting_for_the_lock_forces_a_reconcile(
+        self, manual_vault, monkeypatch
+    ):
+        await _paths(manual_vault, "anything")  # built; manual mode stays fresh
+        reached_write_through = asyncio.Event()
+        original = manual_vault._index_note_mutated
+
+        async def spy(*args, **kwargs):
+            reached_write_through.set()
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(manual_vault, "_index_note_mutated", spy)
+        async with manual_vault._index_lock:  # held, as a running pass would
+            write = asyncio.create_task(create_note("late.md", "# Late\n\nsloth"))
+            await asyncio.wait_for(reached_write_through.wait(), timeout=5)
+            write.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await write
+        monkeypatch.undo()
+
+        assert (manual_vault.vault_path / "late.md").exists()  # the write landed
+        assert await _paths(manual_vault, "sloth") == {"late.md"}
+
+    @pytest.mark.asyncio
+    async def test_write_through_cancelled_mid_write_forces_a_reconcile(
+        self, manual_vault, monkeypatch
+    ):
+        await _paths(manual_vault, "anything")
+
+        async def cancelled_index_file(self, *args, **kwargs):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(PersistentSearchIndex, "index_file", cancelled_index_file)
+        with pytest.raises(asyncio.CancelledError):
+            await create_note("late.md", "# Late\n\nsloth")
+        monkeypatch.undo()
+
+        assert await _paths(manual_vault, "sloth") == {"late.md"}
+
+    @pytest.mark.asyncio
+    async def test_write_through_cancelled_behind_a_running_pass_still_forces_a_reconcile(
+        self, manual_vault, monkeypatch
+    ):
+        """The write waited on the lock of a pass that was already running and
+        was cancelled there. That pass finishes afterwards and must not wipe
+        the mark that the index lags the disk (in manual mode nothing else
+        would ever reconcile it)."""
+        await _paths(manual_vault, "anything")  # built; manual mode stays fresh
+        _write(manual_vault, "seed.md", "seed words")  # the pass has this to index
+        pass_is_parked = asyncio.Event()
+        release_pass = asyncio.Event()
+        original_index_file = PersistentSearchIndex.index_file
+
+        async def gated_index_file(self, filepath, *args, **kwargs):
+            if filepath == "seed.md":  # the pass's call, not write-through's
+                pass_is_parked.set()
+                await release_pass.wait()
+            return await original_index_file(self, filepath, *args, **kwargs)
+
+        reached_write_through = asyncio.Event()
+        original_mutated = manual_vault._index_note_mutated
+
+        async def spy(*args, **kwargs):
+            reached_write_through.set()
+            return await original_mutated(*args, **kwargs)
+
+        monkeypatch.setattr(PersistentSearchIndex, "index_file", gated_index_file)
+        monkeypatch.setattr(manual_vault, "_index_note_mutated", spy)
+        sync = asyncio.create_task(manual_vault.sync_index())
+        await asyncio.wait_for(pass_is_parked.wait(), timeout=5)  # walked, parked
+        write = asyncio.create_task(create_note("late.md", "# Late\n\nsloth"))
+        await asyncio.wait_for(reached_write_through.wait(), timeout=5)  # on the lock
+        write.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await write
+        release_pass.set()
+        await sync
+        monkeypatch.undo()
+
+        assert (manual_vault.vault_path / "late.md").exists()  # the write landed
+        assert await _paths(manual_vault, "sloth") == {"late.md"}
+
+    @pytest.mark.asyncio
+    async def test_pass_that_does_not_finish_keeps_an_earlier_dirty_mark(
+        self, manual_vault, monkeypatch
+    ):
+        """A pass settles the mark only by finishing: one cancelled midway (a
+        client interrupt) must leave the index flagged for the next query."""
+        await _paths(manual_vault, "anything")  # built; manual mode stays fresh
+
+        async def failing_index_file(self, *args, **kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(PersistentSearchIndex, "index_file", failing_index_file)
+        await create_note("kept.md", "# Kept\n\nresilient")  # write-through fails
+        monkeypatch.undo()
+
+        async def cancelled_index_file(self, *args, **kwargs):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(PersistentSearchIndex, "index_file", cancelled_index_file)
+        with pytest.raises(asyncio.CancelledError):
+            await manual_vault.search_notes("resilient")  # the due pass dies midway
+        monkeypatch.undo()
+
+        assert await _paths(manual_vault, "resilient") == {"kept.md"}
