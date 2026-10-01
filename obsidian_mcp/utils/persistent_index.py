@@ -148,7 +148,7 @@ class PersistentSearchIndex:
 
         Args:
             vault_path: Path to the Obsidian vault
-            index_path: Path to store the SQLite database (defaults to vault/.obsidian/search-index.db)
+            index_path: Path to store the SQLite database (defaults to vault/.obsidian/mcp-search-index.db)
         """
         self.vault_path = vault_path
 
@@ -392,6 +392,14 @@ class PersistentSearchIndex:
 
         # Check if file has been modified
         return file_info["mtime"] != current_mtime or file_info["size"] != current_size
+
+    async def get_file_stats(self) -> dict[str, tuple[float, int]]:
+        """(mtime, size) of every indexed file in one query -- what
+        ObsidianVault's reconcile pass diffs against the vault on disk,
+        instead of one SELECT per file."""
+        db = self._require_db()
+        cursor = await db.execute("SELECT filepath, mtime, size FROM file_index")
+        return {row[0]: (row[1], row[2]) for row in await cursor.fetchall()}
 
     def _determine_property_type(self, value: Any) -> str:
         """Delegates to index_text.determine_property_type (kept since

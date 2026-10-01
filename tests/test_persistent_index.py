@@ -82,6 +82,27 @@ class TestPersistentIndex:
         await index.close()
 
     @pytest.mark.asyncio
+    async def test_get_file_stats_returns_stored_mtime_and_size(self, test_vault_dir):
+        """One query returns (mtime, size) for every indexed file -- what
+        ObsidianVault's reconcile pass diffs against the disk."""
+        index = PersistentSearchIndex(Path(test_vault_dir))
+        await index.initialize()
+        assert await index.get_file_stats() == {}
+
+        await index.index_file("a.md", "Content A", 1000.0, 10)
+        await index.index_file("dir/b.md", "Content B", 2000.5, 20)
+
+        assert await index.get_file_stats() == {
+            "a.md": (1000.0, 10),
+            "dir/b.md": (2000.5, 20),
+        }
+
+        await index.remove_file("a.md")
+        assert await index.get_file_stats() == {"dir/b.md": (2000.5, 20)}
+
+        await index.close()
+
+    @pytest.mark.asyncio
     async def test_search_functionality(self, test_vault_dir):
         """Test searching indexed content."""
         index = PersistentSearchIndex(Path(test_vault_dir))
