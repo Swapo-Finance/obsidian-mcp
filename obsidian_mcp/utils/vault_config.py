@@ -14,6 +14,8 @@ today's behavior — nothing in this module changes what happens when none of
 the new OBSIDIAN_* env vars are set.
 """
 
+from ..constants import ERROR_MESSAGES
+
 # Re-exported for backward compatibility — see module docstring. __all__
 # below tells ruff these imports are intentional public re-exports, not
 # unused.
@@ -58,7 +60,8 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Note-size policy (spec section 1: OBSIDIAN_MAX_NOTE_LINES / _APPEND_HEADROOM_LINES)
+# Note-size policy (spec section 1: OBSIDIAN_MAX_NOTE_LINES /
+# _APPEND_HEADROOM_LINES, plus OBSIDIAN_MAX_NOTE_CHARS)
 # ---------------------------------------------------------------------------
 
 
@@ -73,18 +76,21 @@ def check_note_size_policy(
     relpath: str,
     resulting_line_count: int,
     is_incremental: bool,
+    resulting_char_count: int,
 ) -> str | None:
-    """Check `resulting_line_count` (the note's total line count after the
-    write) against OBSIDIAN_MAX_NOTE_LINES.
+    """Check the note's size after the write against OBSIDIAN_MAX_NOTE_LINES
+    and OBSIDIAN_MAX_NOTE_CHARS.
 
     is_incremental=True (update append / edit_note_section) uses the lower,
-    early-warning ceiling MAX - APPEND_HEADROOM_LINES; False (create_note /
+    early-warning line ceiling MAX - APPEND_HEADROOM_LINES; False (create_note /
     update replace) uses MAX directly, since the whole note is being
-    (re)written in one shot.
+    (re)written in one shot. The char ceiling has no headroom: every write is
+    checked against OBSIDIAN_MAX_NOTE_CHARS directly.
 
     Returns None (ok / off / daily-exempt), a warning message (warn policy —
     caller still writes and surfaces the message), or raises ValueError
-    (strict policy — caller must not write).
+    (strict policy — caller must not write). A write over both ceilings gets
+    one message that holds both texts.
     """
     if vault.note_size_policy == "off":
         return None
@@ -93,7 +99,7 @@ def check_note_size_policy(
 
     if is_incremental:
         ceiling = vault.max_note_lines - vault.append_headroom_lines
-        message = (
+        line_message = (
             f"Note '{relpath}' would reach {resulting_line_count} lines, over the "
             f"{ceiling}-line append ceiling (OBSIDIAN_MAX_NOTE_LINES={vault.max_note_lines} - "
             f"OBSIDIAN_APPEND_HEADROOM_LINES={vault.append_headroom_lines}). Split the content "
@@ -101,15 +107,25 @@ def check_note_size_policy(
         )
     else:
         ceiling = vault.max_note_lines
-        message = (
+        line_message = (
             f"Note '{relpath}' would have {resulting_line_count} lines, over "
             f"OBSIDIAN_MAX_NOTE_LINES={vault.max_note_lines}. Split the content into multiple "
             "notes, or raise OBSIDIAN_MAX_NOTE_LINES."
         )
 
-    if resulting_line_count <= ceiling:
+    messages: list[str] = []
+    if resulting_line_count > ceiling:
+        messages.append(line_message)
+    if resulting_char_count > vault.max_note_chars:
+        messages.append(
+            ERROR_MESSAGES["note_over_char_limit"].format(
+                path=relpath, chars=resulting_char_count, limit=vault.max_note_chars
+            )
+        )
+    if not messages:
         return None
 
+    message = " ".join(messages)
     if vault.note_size_policy == "strict":
         raise ValueError(message)
     return message  # warn

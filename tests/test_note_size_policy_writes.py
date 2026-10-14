@@ -30,11 +30,18 @@ def _lines(n: int) -> str:
     return "\n".join(f"L{i}" for i in range(n))
 
 
+def _chars(n: int) -> str:
+    """One line of exactly n characters: inside any line ceiling."""
+    return "x" * n
+
+
 @pytest.fixture
 def make_vault():
     created_dirs = []
 
-    def _make(max_lines=None, headroom=None, policy=None, daily_dir=None):
+    def _make(
+        max_lines=None, headroom=None, policy=None, daily_dir=None, max_chars=None
+    ):
         temp_dir = tempfile.mkdtemp(prefix="obsidian_sizepolicy_")
         created_dirs.append(temp_dir)
         os.environ["OBSIDIAN_REQUIRE_FRONTMATTER"] = "false"
@@ -46,6 +53,8 @@ def make_vault():
             os.environ["OBSIDIAN_NOTE_SIZE_POLICY"] = policy
         if daily_dir is not None:
             os.environ["OBSIDIAN_DAILY_DIR"] = daily_dir
+        if max_chars is not None:
+            os.environ["OBSIDIAN_MAX_NOTE_CHARS"] = str(max_chars)
         return init_vault(temp_dir)
 
     yield _make
@@ -56,6 +65,7 @@ def make_vault():
         "OBSIDIAN_APPEND_HEADROOM_LINES",
         "OBSIDIAN_NOTE_SIZE_POLICY",
         "OBSIDIAN_DAILY_DIR",
+        "OBSIDIAN_MAX_NOTE_CHARS",
     ):
         os.environ.pop(key, None)
     for d in created_dirs:
@@ -188,6 +198,81 @@ class TestDailyNotesAlwaysExemptFromSizePolicy:
         # Both huge fragments actually landed — exemption isn't silently
         # truncating content, it's just skipping the size check entirely.
         assert note["details"]["content"].count("L49") == 2
+
+
+class TestCharCeiling:
+    """OBSIDIAN_MAX_NOTE_CHARS: checked next to the line ceiling, with the same
+    modes and daily exemption, and no append headroom. The 63,544-character
+    note that motivated it had only 499 lines."""
+
+    @pytest.mark.asyncio
+    async def test_exactly_at_the_char_limit_succeeds_under_strict(self, make_vault):
+        make_vault(max_chars=100, policy="strict")
+        result = await create_note("Note.md", _chars(100))
+        assert result["success"] is True
+        assert "warnings" not in result
+
+    @pytest.mark.asyncio
+    async def test_over_the_char_limit_within_the_line_limit_raises_under_strict(
+        self, make_vault
+    ):
+        make_vault(max_chars=100, policy="strict")
+        with pytest.raises(ValueError, match="OBSIDIAN_MAX_NOTE_CHARS=100"):
+            await create_note("Note.md", _chars(101))
+        with pytest.raises(FileNotFoundError):
+            await read_note("Note.md")
+
+    @pytest.mark.asyncio
+    async def test_warning_tells_the_agent_to_split_into_linked_notes(self, make_vault):
+        make_vault(max_chars=100, policy="warn")
+        result = await create_note("Note.md", _chars(101))
+        assert result["success"] is True
+        [warning] = result["warnings"]
+        assert "101 characters" in warning
+        assert "smaller notes" in warning
+        assert "[[wikilinks]]" in warning
+
+    @pytest.mark.asyncio
+    async def test_off_ignores_the_char_limit(self, make_vault):
+        make_vault(max_chars=100, policy="off")
+        result = await create_note("Note.md", _chars(101))
+        assert "warnings" not in result
+
+    @pytest.mark.asyncio
+    async def test_daily_note_is_exempt(self, make_vault):
+        make_vault(max_chars=100, policy="strict", daily_dir="daily")
+        result = await create_note("daily/2020-01-01.md", _chars(500))
+        assert "warnings" not in result
+
+    @pytest.mark.asyncio
+    async def test_append_has_no_char_headroom(self, make_vault):
+        make_vault(max_chars=100, policy="strict")
+        await create_note("Note.md", "Base")
+        # base(4) + blank-line join(2) + fragment(94) = 100: exactly the limit.
+        result = await update_note("Note.md", _chars(94), merge_strategy="append")
+        assert result["success"] is True
+        with pytest.raises(ValueError, match="OBSIDIAN_MAX_NOTE_CHARS"):
+            await update_note("Note.md", "y", merge_strategy="append")
+
+    @pytest.mark.asyncio
+    async def test_note_already_over_the_limit_is_flagged_until_a_write_brings_it_under(
+        self, make_vault
+    ):
+        vault = make_vault(max_chars=100, policy="strict")
+        (vault.vault_path / "Big.md").write_text(_chars(150))  # edited outside
+        # Same as the line ceiling: the check uses the size after the write.
+        with pytest.raises(ValueError, match="OBSIDIAN_MAX_NOTE_CHARS"):
+            await update_note("Big.md", _chars(120), merge_strategy="replace")
+        result = await update_note("Big.md", _chars(50), merge_strategy="replace")
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_line_and_char_violations_share_one_message(self, make_vault):
+        make_vault(max_lines=2, max_chars=10, policy="warn")
+        result = await create_note("Note.md", "aaaa\nbbbb\ncccc")  # 3 lines, 14 chars
+        [warning] = result["warnings"]
+        assert "OBSIDIAN_MAX_NOTE_LINES=2" in warning
+        assert "OBSIDIAN_MAX_NOTE_CHARS=10" in warning
 
 
 if __name__ == "__main__":
