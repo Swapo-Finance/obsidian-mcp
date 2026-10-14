@@ -11,13 +11,16 @@
 3. **Surgical changes** — touch only what the request requires; match existing style; don't refactor, reformat, or "improve" adjacent code. Remove orphans *your* change created; leave pre-existing dead code alone (mention it, don't delete it). Every changed line should trace directly to the user's request.
 4. **Goal-driven execution** — turn tasks into verifiable goals ("fix the bug" → "write a test that reproduces it, then make it pass"). For multi-step work, state a brief plan with a verify check per step, then loop until verified.
 5. **Main session = orchestrator — it does not implement.** Plan, decide, coordinate; ALL delegable implementation and analysis goes to a specialist subagent via `Agent`, parallel when scopes don't conflict.
+6. **Objective writing (ASD-STE100)** — write all text (reply, subagent prompt, commit, PR, doc, memory) to the Simplified Technical English standard, and apply it to Portuguese too: result first; one term per concept and one meaning per term; at most 20 words per sentence in instructions and 25 in descriptions; at most 6 sentences per paragraph; one instruction per sentence, in the imperative, active voice, and simple tense; a verb for the action, not a noun ("validate", not "perform the validation"; in Portuguese, "valide", not "faça a validação"); in a warning, put the command before the risk; put complex text in a vertical list. Cut preamble, flourish, repetition, and recaps, but never so far that a sentence gets two readings.
 
 ## Stack
+
 Python · uv
 
 Architecture: **flat**.
 
 ## Canonical commands
+
 Always use these exact commands (do not guess):
 
 - **Install:** `uv sync --extra dev`
@@ -31,6 +34,7 @@ Always use these exact commands (do not guess):
 ## Workflow & Agents
 
 Invoke `superpowers:subagent-driven-development` for **non-trivial** implementation — trigger it when the request meets **≥2** of:
+
 - touches **3+ files** or **2+ domains/layers** (UI + agent, API + DB…)
 - is a **new feature / epic / cross-cutting refactor** (not a one-line or single-function change)
 - needs a **multi-step plan** or ordered tasks, each with its own verification
@@ -147,6 +151,7 @@ Domain-specific guidance lives in nested CLAUDE.md files (loaded on demand):
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
 Rules:
+
 - For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
