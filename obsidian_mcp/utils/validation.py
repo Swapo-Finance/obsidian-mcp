@@ -2,7 +2,12 @@
 
 import re
 
-from ..constants import ERROR_MESSAGES, MARKDOWN_EXTENSIONS
+from ..constants import (
+    ERROR_MESSAGES,
+    MARKDOWN_EXTENSIONS,
+    READ_MAX_CHARS_MAX,
+    READ_MAX_CHARS_MIN,
+)
 
 
 class ValidationError(ValueError):
@@ -86,6 +91,28 @@ def validate_context_length(length: int) -> tuple[bool, str | None]:
     if length < 10 or length > 500:
         return False, ERROR_MESSAGES["invalid_context_length"].format(length=length)
 
+    return True, None
+
+
+def validate_read_window(offset: int, max_chars: int | None) -> tuple[bool, str | None]:
+    """
+    Validate the paging parameters of read_note.
+
+    Args:
+        offset: Character offset where the page starts
+        max_chars: Page size, or None to use OBSIDIAN_READ_MAX_CHARS
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if offset < 0:
+        return False, ERROR_MESSAGES["invalid_read_offset"].format(offset=offset)
+    if max_chars is not None and not (
+        READ_MAX_CHARS_MIN <= max_chars <= READ_MAX_CHARS_MAX
+    ):
+        return False, ERROR_MESSAGES["invalid_read_max_chars"].format(
+            max_chars=max_chars, minimum=READ_MAX_CHARS_MIN, maximum=READ_MAX_CHARS_MAX
+        )
     return True, None
 
 

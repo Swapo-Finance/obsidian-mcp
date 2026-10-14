@@ -152,7 +152,9 @@ This command will:
            "OBSIDIAN_WIKILINK_POLICY": "strict",
            "OBSIDIAN_DAILY_DIR": "daily",
            "OBSIDIAN_REQUIRE_FRONTMATTER": "true",
-           "OBSIDIAN_SEARCH_RESULT_MODE": "auto"
+           "OBSIDIAN_SEARCH_RESULT_MODE": "auto",
+           "OBSIDIAN_MAX_NOTE_CHARS": "40000",
+           "OBSIDIAN_READ_MAX_CHARS": "40000"
          }
        }
      }
@@ -183,7 +185,7 @@ Here are some example prompts to get started:
 
 | Tool | What it does |
 |---|---|
-| [`read_note`](#read_note) | Read a note's content and metadata |
+| [`read_note`](#read_note) | Read a note's content and metadata, in pages for a long note, or one section by its heading |
 | [`create_note`](#create_note) | Create a new note, or overwrite an existing one |
 | [`update_note`](#update_note) | Replace or append to an existing note's content |
 | [`edit_note_section`](#edit_note_section) | Edit one section of a note, identified by its markdown heading |
@@ -221,23 +223,55 @@ Here are some example prompts to get started:
 <details>
 <summary><b><code>read_note</code></b></summary>
 
-Read the content and metadata of a specific note.
+Read the content and metadata of a note. A long note comes back in pages.
 
 **Parameters:**
 - `path`: Path to the note (e.g., "Daily/2024-01-15.md")
+- `offset` (default: `0`): Character offset where the page starts. Use the `next_offset` value of the previous page.
+- `max_chars` (default: `OBSIDIAN_READ_MAX_CHARS`, which is `40000`): Maximum characters in one page, from `1000` to `1000000`. A page ends after the last line break that fits. A line longer than the page is cut.
+- `section` (optional): Markdown heading of one section, e.g. `"## Tasks"`. The match is the same as in `edit_note_section`: case-insensitive, first match, sub-sections included. `offset` then counts from the heading line.
 
-**Returns:**
+**Returns, when the text fits in one page from offset 0:**
 ```json
 {
+  "success": true,
   "path": "Daily/2024-01-15.md",
-  "content": "# Daily Note\n\nContent here...",
-  "metadata": {
-    "tags": ["daily", "journal"],
-    "aliases": [],
-    "frontmatter": {}
+  "operation": "read",
+  "details": {
+    "content": "# Daily Note\n\nContent here...",
+    "metadata": {"tags": ["daily", "journal"], "aliases": [], "frontmatter": {}}
   }
 }
 ```
+
+**Returns, for a paged read** (the flags and the `message` come before the `content`):
+
+```json
+{
+  "success": true,
+  "path": "Projects/Big.md",
+  "operation": "read",
+  "details": {
+    "truncated": true,
+    "next_offset": 39878,
+    "total_chars": 63544,
+    "message": "Showing characters 0-39878 of 63544. This page is only part of the text. ...",
+    "content": "# Big\n\n## Context\n...",
+    "metadata": {"tags": [], "aliases": [], "frontmatter": {}},
+    "outline": [
+      {"heading": "Big", "level": 1, "offset": 0, "chars": 63544},
+      {"heading": "Context", "level": 2, "offset": 7, "chars": 21230}
+    ]
+  }
+}
+```
+
+- With `section`, `details` starts with a `section` key, the heading as you passed it, in both shapes: `{"section": "## Tasks", "content": ..., "metadata": ...}` when the section fits in one page, else `section` and then the paged keys above.
+- Follow `next_offset` until it is `null` to read the whole note. The pages join to the exact text. Pass the same `section` on each call when you page through a section.
+- `outline` lists up to 50 headings, each with its `offset` and its size in `chars`. When a note has more, the deepest heading level is left out first. Each `heading` text is cut at 200 characters, the longest `section` value.
+- A page or a section is only part of the note. Read all pages before you replace the note with `update_note`, or use `merge_strategy="append"` or `edit_note_section`.
+- Each page is a separate read, and every page carries `metadata`. If `total_chars` or `metadata.modified` changes between pages, the note changed: read again from offset 0.
+- An `offset` above `0` that is at or after the end of the text returns an error. A `section` that matches no heading returns an error.
 
 </details>
 <a id="create_note"></a>
@@ -249,7 +283,7 @@ Create a new note or update an existing one.
 **Parameters:**
 - `path`: Path where the note should be created
 - `content`: Markdown content of the note (consider adding tags for organization)
-- `overwrite` (default: `false`): Whether to overwrite existing notes
+- `overwrite` (default: `false`): Whether to overwrite existing notes. If `read_note` returned `truncated: true`, or you read with `offset` or `section`, you hold only part of the note: never overwrite the note with it. Read every page first, or use `update_note` with `merge_strategy="append"`, or `edit_note_section`.
 
 **Best Practices:**
 - Add relevant tags when creating notes to maintain organization
@@ -263,7 +297,7 @@ Create a new note or update an existing one.
 
 Update the content of an existing note.
 
-⚠️ **IMPORTANT**: By default, this tool REPLACES the entire note content. Always read the note first if you need to preserve existing content.
+⚠️ **IMPORTANT**: By default, this tool REPLACES the entire note content. Always read the note first if you need to preserve existing content. If `read_note` returned `truncated: true`, or you read with `offset` or `section`, you hold only part of the note: never replace the note with it. Read every page first, or use `merge_strategy="append"` or `edit_note_section`.
 
 **Parameters:**
 - `path`: Path to the note to update
@@ -288,7 +322,7 @@ Edit a specific section of a note identified by a markdown heading.
 
 **Parameters:**
 - `path`: Path to the note to edit
-- `section_identifier`: Markdown heading that identifies the section (e.g., "## Tasks", "### Status")
+- `section_identifier`: Markdown heading that identifies the section (e.g., "## Tasks", "### Status"). The text after the `#` marks must not be blank: a value such as `"##   "` is rejected.
 - `content`: Content to insert, replace, or append
 - `operation` (default: `"insert_after"`): How to edit the section
   - `"insert_after"`: Add content after the section heading
@@ -1222,15 +1256,16 @@ obsidian-mcp/
 │   │   └── ...                      # note_move, note_rename, folders, tag_editing, batch_properties, search_regex, wikilink_validation, write_policy, and more
 │   ├── models/
 │   │   └── obsidian.py              # Note, NoteMetadata pydantic models
-│   └── utils/                       # ~16 modules — vault I/O, path resolution, config
+│   └── utils/                       # ~17 modules — vault I/O, path resolution, config
 │       ├── filesystem.py            # ObsidianVault — single I/O choke point, owns the search index and cache
 │       ├── persistent_index.py      # SQLite (aiosqlite) search index; regex matches run with a per-file worker-process timeout
 │       ├── vault_cache.py           # stat cache with TTL
 │       ├── vault_config.py          # facade — folder templates, path normalization, slug/tag kebab, frontmatter requirements now live in their own modules
 │       ├── env.py                   # pure OBSIDIAN_* env-var readers
+│       ├── markdown_sections.py     # heading grammar shared by read_note and edit_note_section: headings, section bounds, outline scan
 │       ├── validation.py            # validators + validate_params decorator
 │       └── validators.py            # validate_note_path, sanitize_path, is_markdown_file
-├── tests/                           # 42 files + conftest.py, flat, one per feature, 559 tests total
+├── tests/                           # 44 files + conftest.py, flat, one per feature, 612 tests total
 ├── pyproject.toml                   # dependencies, [project.scripts] entry points, ruff/pyright config
 ├── CLAUDE.md                        # Instructions for Claude Code
 └── README.md
@@ -1252,9 +1287,11 @@ Not enforced on `update_note` append or `edit_note_section` — incremental edit
 
 ### Note-size policy
 
-`OBSIDIAN_NOTE_SIZE_POLICY` (`strict|warn|off`, default `warn`) checks notes against a line-count ceiling, `OBSIDIAN_MAX_NOTE_LINES` (default `500`):
-- Full-content writes are checked against the full ceiling
-- Incremental writes (append, `edit_note_section`) are checked against a lower ceiling (`OBSIDIAN_MAX_NOTE_LINES` minus `OBSIDIAN_APPEND_HEADROOM_LINES`, default headroom `100` — effectively 400), so an append gets flagged before a later one would blow past the hard limit
+`OBSIDIAN_NOTE_SIZE_POLICY` (`strict|warn|off`, default `warn`) checks each written note against two ceilings: `OBSIDIAN_MAX_NOTE_LINES` (default `500`) and `OBSIDIAN_MAX_NOTE_CHARS` (default `40000`):
+- Full-content writes are checked against both ceilings
+- Incremental writes (append, `edit_note_section`) are checked against a lower line ceiling (`OBSIDIAN_MAX_NOTE_LINES` minus `OBSIDIAN_APPEND_HEADROOM_LINES`, default headroom `100` — effectively 400), so an append gets flagged before a later one would blow past the hard limit. The character ceiling has no headroom
+- A note within the line ceiling but over the character ceiling is flagged too. The warning tells the agent to split the note into smaller linked notes
+- The check uses the size of the note after the write. A note that is already over a ceiling is flagged by every write that leaves it over
 - `strict` rejects the write; `warn` writes anyway and returns a warning; `off` disables the check
 - Daily notes are always exempt
 
@@ -1320,7 +1357,7 @@ Use 'created' to find notes by creation date, 'modified' for last edit date
 ### Recommended Workflows
 
 **Safe note editing:**
-1. Read the existing note first
+1. Read the existing note first. If the response has `truncated: true`, read every page: follow `next_offset` until it is `null`. A page or a section is only part of the note. If `total_chars` or `metadata.modified` changes between pages, the note changed: read again from offset 0
 2. Modify the content as needed
 3. Update with the complete new content
 
@@ -1385,9 +1422,11 @@ All behavior is controlled via `OBSIDIAN_*` environment variables:
 | `OBSIDIAN_FOLDER_TEMPLATES` | Per-folder note templates | unset (off) | JSON array, e.g. `[{"folder":"01-projects","template":"templates/project.md"}]` |
 | `OBSIDIAN_REQUIRE_FRONTMATTER` | Require `name`+`description` frontmatter on full-content writes | `true` | boolean |
 | `OBSIDIAN_WIKILINK_POLICY` | How broken `[[wikilinks]]` are handled on write | `warn` | `strict\|warn\|off` |
-| `OBSIDIAN_NOTE_SIZE_POLICY` | How exceeding the line-count ceiling is handled | `warn` | `strict\|warn\|off` |
+| `OBSIDIAN_NOTE_SIZE_POLICY` | How exceeding the line or character ceiling is handled | `warn` | `strict\|warn\|off` |
 | `OBSIDIAN_MAX_NOTE_LINES` | Line-count ceiling per note | `500` | integer |
 | `OBSIDIAN_APPEND_HEADROOM_LINES` | Safety margin subtracted from the ceiling for incremental writes | `100` | integer |
+| `OBSIDIAN_MAX_NOTE_CHARS` | Character ceiling per note, checked next to the line ceiling (no append headroom) | `40000` | integer from `1` (other values use the default) |
+| `OBSIDIAN_READ_MAX_CHARS` | Default page size of `read_note`; a longer note comes back in pages | `40000` | integer from `1000` to `1000000` (other values use the default) |
 | `OBSIDIAN_TAG_STYLE` | Kebab-normalize frontmatter tags on write | `as-is` | `kebab\|as-is` |
 | `OBSIDIAN_SLUG_STYLE` | Kebab-slugify filenames on write | `as-is` | `kebab\|as-is` |
 | `OBSIDIAN_DAILY_DIR` | Folder for daily notes (`add_daily_note`) | `daily` | vault-relative/absolute/`~` path |
@@ -1526,7 +1565,7 @@ If you were using a previous version that required the Local REST API plugin:
 OBSIDIAN_VAULT_PATH=/tmp/some-existing-dir pytest
 ```
 
-Tests create temporary vaults for isolation and don't require a running Obsidian instance. The suite is 42 files, flat (no subdirectories), one file per feature area, 559 tests total, plus a `conftest.py` holding one autouse fixture that resets environment variables and the vault singleton between tests.
+Tests create temporary vaults for isolation and don't require a running Obsidian instance. The suite is 44 files, flat (no subdirectories), one file per feature area, 612 tests total, plus a `conftest.py` holding one autouse fixture that resets environment variables and the vault singleton between tests.
 
 **CI:** GitHub Actions runs the suite across Python 3.10/3.11/3.12 via `uv sync --extra dev` + `uv run pytest -q`, plus an advisory (non-blocking) `ruff`/`pyright` pass scoped to files changed in the PR.
 
@@ -1590,6 +1629,8 @@ git push origin vX.Y.Z
 - 🧹 **Lint and typecheck clean** - `ruff` and `pyright` now report zero findings across the project; every remaining broad `except Exception` is a documented, deliberate exception in `pyproject.toml` rather than unaddressed debt
 - 🧪 **Test-suite determinism** - added `tests/conftest.py` with an autouse fixture that restores environment variables and resets the vault singleton between tests, closing state leaks between test files
 - 🏗️ **Modular restructuring** - split the ~30 MCP tool wrappers and their underlying implementations out of a handful of large files into focused, single-feature modules (see [Project Structure](#project-structure)); all existing import paths keep working via facade re-exports
+- 📄 **Paged note reads** - `read_note` returns a long note in pages. New parameters: `offset`, `max_chars`, and `section` (read one section by its heading). A paged response adds `truncated`, `next_offset`, `total_chars`, a heading `outline`, and a `message`. The default page size is `OBSIDIAN_READ_MAX_CHARS` (`40000`). This keeps a read under 50,000 characters, the size at which Claude Code saves a tool result to a file. A note that fits in one page keeps the old response. A section read starts `details` with the `section` it was given, so the reply shows that it holds only part of the note. If `total_chars` or `metadata.modified` changes between pages, the note changed and the agent reads again from offset 0. Each outline heading is cut at 200 characters. The outline is built in one pass, and the CPU-bound part of a read runs in a thread, so a crafted 10 MB note no longer blocks the server for seconds
+- 📏 **Character ceiling for notes** - The note-size policy also checks `OBSIDIAN_MAX_NOTE_CHARS` (default `40000`), so a long note with few lines is flagged too. Under the default `warn` policy, a write over the ceiling returns a warning that tells the agent to split the note into smaller linked notes. `OBSIDIAN_MAX_NOTE_CHARS` takes integers from 1; other values use `40000`
 - 🐛 **Bug fixes**:
   - Fixed `read_image` silently failing to resize images — a positional-argument bug in the MCP tool wrapper meant every call skipped resizing entirely and returned the original, full-size image
   - Fixed `view_note_images`'s advertised parameter schema for `max_width` (previously showed a default of 1600) not matching its real runtime default of 800
@@ -1598,6 +1639,7 @@ git push origin vX.Y.Z
   - Fixed property and date search raising an unbound-local error on certain fallback paths instead of returning the intended result
   - Fixed a `CancelledError` (and other non-`Exception` `BaseException`s) slipping past an `isinstance(result, Exception)` check during parallel regex search, which could crash the request instead of being handled cleanly
   - Fixed `move_note`/`rename_note` corrupting a note's self-referencing wikilinks (a note linking to itself) during the backlink-rewrite pass
+  - Fixed a ReDoS in the heading pattern of `read_note`'s `section` and `edit_note_section`'s `section_identifier`: the schema check backtracked quadratically, so a `#`, thousands of spaces, and two line breaks took seconds to reject. The shared pattern now needs a non-blank character after the spaces, which keeps the check linear and also rejects a blank heading text such as `"##   "`
 
 ### v2.1.6 (2025-01-30)
 - 🔍 **Find orphaned notes** - New `find_orphaned_notes` tool for comprehensive vault maintenance

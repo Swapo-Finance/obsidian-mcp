@@ -97,6 +97,7 @@ class TestHelpToolWrapper:
             "OBSIDIAN_DAILY_DIR",
             "OBSIDIAN_MAX_NOTE_LINES",
             "OBSIDIAN_APPEND_HEADROOM_LINES",
+            "OBSIDIAN_MAX_NOTE_CHARS",
             "OBSIDIAN_NOTE_SIZE_POLICY",
             "OBSIDIAN_TAG_STYLE",
             "OBSIDIAN_SLUG_STYLE",
@@ -104,6 +105,7 @@ class TestHelpToolWrapper:
             "OBSIDIAN_REQUIRE_FRONTMATTER",
             "OBSIDIAN_SEARCH_RESULT_MODE",
             "OBSIDIAN_SEARCH_INDEX_THRESHOLD",
+            "OBSIDIAN_READ_MAX_CHARS",
         }
         assert expected <= names
 

@@ -209,6 +209,14 @@ async def get_help(ctx: Context | None = None) -> dict[str, Any]:
             "100",
         ),
         _env_row(
+            "OBSIDIAN_MAX_NOTE_CHARS",
+            "int (1 or more)",
+            "40000",
+            str(vault.max_note_chars),
+            "Character ceiling per note, checked next to OBSIDIAN_MAX_NOTE_LINES on every write, with no append headroom. Daily notes are always exempt. A value below 1 falls back to 40000.",
+            "40000",
+        ),
+        _env_row(
             "OBSIDIAN_NOTE_SIZE_POLICY",
             "strict|warn|off",
             "warn",
@@ -279,6 +287,14 @@ async def get_help(ctx: Context | None = None) -> dict[str, Any]:
             "Result-count cutoff used by OBSIDIAN_SEARCH_RESULT_MODE=auto (or a per-call mode='auto') "
             "to decide index vs. content mode.",
             "10",
+        ),
+        _env_row(
+            "OBSIDIAN_READ_MAX_CHARS",
+            "int (1000-1000000)",
+            "40000",
+            str(vault.read_max_chars),
+            "Default page size of read_note_tool. A longer note comes back in pages (offset, next_offset). A value out of range falls back to 40000.",
+            "40000",
         ),
     ]
 

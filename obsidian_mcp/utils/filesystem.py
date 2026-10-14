@@ -11,7 +11,12 @@ from typing import Any
 
 import aiofiles
 
-from ..constants import ERROR_MESSAGES
+from ..constants import (
+    ERROR_MESSAGES,
+    READ_MAX_CHARS_DEFAULT,
+    READ_MAX_CHARS_MAX,
+    READ_MAX_CHARS_MIN,
+)
 from ..models import Note, NoteMetadata
 from .env import read_bool_env, read_choice_env, read_int_env
 from .frontmatter import extract_tags, normalize_frontmatter, parse_frontmatter
@@ -115,6 +120,17 @@ class ObsidianVault:
         self.append_headroom_lines = self._read_int_env(
             "OBSIDIAN_APPEND_HEADROOM_LINES", 100
         )
+        self.max_note_chars = self._read_int_env(
+            "OBSIDIAN_MAX_NOTE_CHARS", 40000, minimum=1
+        )
+        # Default page size of read_note. Like any other invalid knob, a value
+        # out of range falls back to the default: config never crashes the boot.
+        self.read_max_chars = self._read_int_env(
+            "OBSIDIAN_READ_MAX_CHARS",
+            READ_MAX_CHARS_DEFAULT,
+            minimum=READ_MAX_CHARS_MIN,
+            maximum=READ_MAX_CHARS_MAX,
+        )
         self.cache_stat_ttl_seconds = self._read_int_env(
             "OBSIDIAN_CACHE_STAT_TTL_SECONDS", 30
         )
@@ -171,14 +187,21 @@ class ObsidianVault:
         return read_bool_env(name, default)
 
     @staticmethod
-    def _read_int_env(name: str, default: int) -> int:
+    def _read_int_env(
+        name: str,
+        default: int,
+        *,
+        minimum: int | None = None,
+        maximum: int | None = None,
+    ) -> int:
         """Delegates to env.read_int_env (kept for existing callers, incl.
         tests/test_onda2_sanity.py calling it directly on the class)."""
-        return read_int_env(name, default)
+        return read_int_env(name, default, minimum=minimum, maximum=maximum)
 
     def is_daily_note_path(self, relpath: str) -> bool:
         """True if relpath lives inside OBSIDIAN_DAILY_DIR — daily notes are
-        always exempt from OBSIDIAN_MAX_NOTE_LINES / _APPEND_HEADROOM_LINES."""
+        always exempt from the note-size policy (OBSIDIAN_MAX_NOTE_LINES,
+        _APPEND_HEADROOM_LINES, OBSIDIAN_MAX_NOTE_CHARS)."""
         if not self.daily_dir:
             return False
         return relpath == self.daily_dir or relpath.startswith(self.daily_dir + "/")

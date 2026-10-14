@@ -7,6 +7,13 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from .app import mcp
+from .constants import (
+    READ_MAX_CHARS_DEFAULT,
+    READ_MAX_CHARS_MAX,
+    READ_MAX_CHARS_MIN,
+    SECTION_HEADING_PATTERN,
+    SECTION_MAX_CHARS,
+)
 from .tools import (
     create_note,
     delete_note,
@@ -32,21 +39,49 @@ async def read_note_tool(
             ],
         ),
     ],
+    offset: Annotated[
+        int,
+        Field(
+            description="Character offset where the page starts. Use 0 first, then the next_offset value of the previous page.",
+            ge=0,
+        ),
+    ] = 0,
+    max_chars: Annotated[
+        int | None,
+        Field(
+            description=f"Maximum characters in one page, from {READ_MAX_CHARS_MIN} to {READ_MAX_CHARS_MAX}. Omit it to use OBSIDIAN_READ_MAX_CHARS (default {READ_MAX_CHARS_DEFAULT}). A page ends after the last line break that fits.",
+            ge=READ_MAX_CHARS_MIN,
+            le=READ_MAX_CHARS_MAX,
+        ),
+    ] = None,
+    section: Annotated[
+        str | None,
+        Field(
+            description="Markdown heading of one section to read (e.g., '## Tasks'). Matched like edit_note_section: case-insensitive, first match, sub-sections included. offset then counts from the heading line.",
+            pattern=SECTION_HEADING_PATTERN,
+            max_length=SECTION_MAX_CHARS,
+        ),
+    ] = None,
     ctx: Context | None = None,
 ):
     """
     Read the content and metadata of a specific note.
 
     When to use:
-    - Displaying note contents to the user
-    - Analyzing or processing existing note data
+    - Displaying note contents to the user, or analyzing or processing existing note data
     - ALWAYS before updating a note to preserve existing content
     - Verifying a note exists before making changes
 
     When NOT to use:
     - Searching multiple notes (use search_notes instead)
-    - Getting only metadata (use get_note_info for efficiency)
-    - Viewing images in a note (use view_note_images instead)
+    - Getting only metadata (use get_note_info) or viewing images (use view_note_images)
+
+    Long notes: a note longer than max_chars comes back in pages, with truncated, next_offset,
+    total_chars, outline, and message. Call again with offset=next_offset and the same section,
+    if you passed one, until it is null, or read one part with section. A page or a section is
+    only part of the note: read all pages before you replace the note with update_note, or edit
+    one section with edit_note_section. If total_chars or metadata.modified changes between
+    pages, the note changed: read again from offset 0.
 
     Returns:
         Note content and metadata including tags, aliases, and frontmatter.
@@ -57,7 +92,7 @@ async def read_note_tool(
     Then use view_note_images to load and analyze the images if requested.
     """
     try:
-        return await read_note(path, ctx)
+        return await read_note(path, offset, max_chars, section, ctx)
     except (ValueError, FileNotFoundError) as e:
         raise ToolError(str(e))
     except Exception as e:
@@ -95,7 +130,7 @@ async def create_note_tool(
     overwrite: Annotated[
         bool,
         Field(
-            description="Set to true to replace an existing note at this location. Use carefully as this deletes the original content.",
+            description="Set to true to replace an existing note at this location. Use carefully as this deletes the original content. If read_note_tool returned truncated=true, or you read with offset or section, you hold only part of the note: never replace the note with it. Read every page first, or use update_note_tool with merge_strategy='append', or edit_note_section_tool.",
             default=False,
         ),
     ] = False,
@@ -105,8 +140,7 @@ async def create_note_tool(
     Create a new note or overwrite an existing one.
 
     When to use:
-    - Creating new notes with specific content
-    - Setting up templates or structured notes
+    - Creating new notes with specific content, templates, or structured notes
     - Programmatically generating documentation
 
     When NOT to use:
@@ -139,7 +173,7 @@ async def update_note_tool(
     content: Annotated[
         str,
         Field(
-            description="New content for the note. By default this REPLACES all existing content. Use merge_strategy='append' to add to the end instead.",
+            description="New content for the note. By default this REPLACES all existing content. Use merge_strategy='append' to add to the end instead. If read_note_tool returned truncated=true, or you read with offset or section, you hold only part of the note: never replace the note with it. Read every page first, or use merge_strategy='append' or edit_note_section_tool.",
             min_length=0,
             max_length=1000000,
         ),
@@ -163,17 +197,17 @@ async def update_note_tool(
     """
     Update the content of an existing note.
 
-    ⚠️ IMPORTANT: By default, this REPLACES the entire note content.
-    Always read the note first if you need to preserve existing content.
+    ⚠️ IMPORTANT: By default, this REPLACES the entire note content. Always read the note
+    first if you need to preserve existing content. If read_note_tool returned truncated=true,
+    or you read with offset or section, you hold only part of the note: never replace the
+    note with it. Read every page first, or use merge_strategy='append' or edit_note_section_tool.
 
     When to use:
-    - Updating a note with completely new content (replace)
-    - Adding content to the end of a note (append)
+    - Replacing a note with completely new content, or adding to its end (append)
     - Programmatically modifying notes
 
     When NOT to use:
-    - Making small edits (read first, then update with full content)
-    - Creating new notes (use create_note instead)
+    - Small edits (read first, then update with full content) or new notes (use create_note)
 
     Returns:
         Update status with path, metadata, and operation performed
@@ -204,9 +238,9 @@ async def edit_note_section_tool(
         str,
         Field(
             description="Markdown heading that identifies the section (e.g., '## Tasks', '### Status')",
-            pattern=r"^#{1,6}\s+.+$",
+            pattern=SECTION_HEADING_PATTERN,
             min_length=3,
-            max_length=200,
+            max_length=SECTION_MAX_CHARS,
             examples=[
                 "## Tasks",
                 "### Status Updates",
@@ -250,13 +284,11 @@ async def edit_note_section_tool(
 
     When NOT to use:
     - Simple append to end of note (use update_note with merge_strategy='append')
-    - Replacing entire note content (use update_note)
-    - Creating a new note (use create_note)
+    - Replacing entire note content (use update_note) or creating a note (use create_note)
 
     Section identification:
     - Sections are identified by markdown headings (# ## ### etc.)
-    - Match is case-insensitive
-    - First matching heading is used if duplicates exist
+    - Match is case-insensitive; the first matching heading is used if duplicates exist
     - Section includes content until next heading of same/higher level
 
     Operations:

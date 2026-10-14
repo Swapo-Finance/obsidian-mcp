@@ -13,7 +13,7 @@ without knowing which tool invoked it.
 
 ## Key patterns
 
-- `ObsidianVault` (`filesystem.py`, 1041 lines) is the only class that touches the vault. It is
+- `ObsidianVault` (`filesystem.py`, 1064 lines) is the only class that touches the vault. It is
   a process singleton created by `init_vault()` and fetched by `get_vault()`. Deliberately over
   the 350-line guideline: it's one class, and splitting it into mixins would cost pyright its
   view of `self` for a marginal navigation gain.
@@ -32,8 +32,8 @@ without knowing which tool invoked it.
 - Write policy is a chain of pure functions, all re-exported from `vault_config.py`:
   `build_template_info` → `check_template_conformance` (`templates.py`) →
   `apply_frontmatter_requirements` (`frontmatter_requirements.py`) → `check_note_size_policy`
-  (owned directly by `vault_config.py`). `slugify_kebab` / `normalize_tag_kebab` (`slugs.py`)
-  implement the slug and tag styles.
+  (owned directly by `vault_config.py`; it checks the line ceiling and the character ceiling).
+  `slugify_kebab` / `normalize_tag_kebab` (`slugs.py`) implement the slug and tag styles.
 - Every `OBSIDIAN_*` var is read in one place, `ObsidianVault.__init__` (`filesystem.py`) —
   either a direct `os.getenv` (vault path, index tuning, daily dir, folder templates) or the
   `_read_bool_env`/`_read_choice_env`/`_read_int_env` delegators to `env.py`'s pure, directly
@@ -60,6 +60,7 @@ without knowing which tool invoked it.
   reaching for `# type: ignore`.
 - Link parsing is two module-level regexes in `links.py`: `WIKI_LINK_PATTERN` and
   `MARKDOWN_LINK_PATTERN`. Extend those rather than writing a new link regex elsewhere.
+- Heading grammar is `markdown_sections.py`, shared by `edit_note_section` and `read_note`.
 
 ## Applied rules
 

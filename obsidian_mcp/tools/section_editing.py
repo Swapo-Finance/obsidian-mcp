@@ -1,7 +1,5 @@
 """Section-level note editing: edit_note_section."""
 
-import re
-import unicodedata
 from typing import Any
 
 from fastmcp import Context
@@ -9,41 +7,9 @@ from fastmcp import Context
 from ..constants import ERROR_MESSAGES
 from ..utils import sanitize_path, validate_note_path
 from ..utils.filesystem import get_vault
+from ..utils.markdown_sections import find_section_bounds, parse_heading
 from .link_management import validate_wikilinks_for_write
 from .write_policy import _serialize_note_writes, _size_policy_warning
-
-
-def _find_section_bounds(
-    lines: list[str], heading_level: int, heading_text: str
-) -> tuple[int, int] | None:
-    """Locate the first heading (case-insensitive, NFC-normalized) matching
-    heading_level/heading_text -- first match wins when a heading repeats.
-
-    Returns (section_start, section_end): section_end is the index of the
-    next heading of the same or higher level, or len(lines) if the section
-    runs to end of file. Returns None if no heading matches.
-    """
-    normalized_target = unicodedata.normalize("NFC", heading_text.lower())
-    for i, line in enumerate(lines):
-        line_match = re.match(r"^(#{1,6})\s+(.+)$", line)
-        if not line_match:
-            continue
-        line_level = len(line_match.group(1))
-        if line_level != heading_level:
-            continue
-        line_text = line_match.group(2).strip()
-        if unicodedata.normalize("NFC", line_text.lower()) != normalized_target:
-            continue
-
-        section_end = len(lines)
-        for j in range(i + 1, len(lines)):
-            next_match = re.match(r"^(#{1,6})\s+", lines[j])
-            if next_match and len(next_match.group(1)) <= heading_level:
-                section_end = j
-                break
-        return i, section_end
-
-    return None
 
 
 def _apply_insert_after(lines: list[str], section_start: int, content: str) -> None:
@@ -164,18 +130,16 @@ async def edit_note_section(
     content, warnings = await validate_wikilinks_for_write(vault, content)
 
     # Parse the section identifier to extract heading level and text
-    heading_match = re.match(r"^(#{1,6})\s+(.+)$", section_identifier)
-    if not heading_match:
+    heading = parse_heading(section_identifier)
+    if heading is None:
         raise ValueError(
             f"Invalid section identifier: {section_identifier}. Must be a markdown heading (e.g., '## Section Name')"
         )
-
-    heading_level = len(heading_match.group(1))
-    heading_text = heading_match.group(2).strip()
+    heading_level, heading_text = heading
 
     # Find the section in the content
     lines = note_content.split("\n")
-    bounds = _find_section_bounds(lines, heading_level, heading_text)
+    bounds = find_section_bounds(lines, heading_level, heading_text)
 
     # Handle missing section
     if bounds is None:

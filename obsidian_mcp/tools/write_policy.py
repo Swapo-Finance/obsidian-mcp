@@ -137,7 +137,13 @@ def _size_policy_warning(
 ) -> list[str]:
     """Run check_note_size_policy and wrap a warn-level result as a
     single-item list (empty if ok/off/daily-exempt/strict-already-raised)."""
-    warning = check_note_size_policy(vault, path, count_lines(content), is_incremental)
+    warning = check_note_size_policy(
+        vault,
+        path,
+        resulting_line_count=count_lines(content),
+        is_incremental=is_incremental,
+        resulting_char_count=len(content),
+    )
     return [warning] if warning else []
 
 
