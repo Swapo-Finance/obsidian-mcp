@@ -1,14 +1,20 @@
 """Note reading: read_note, with pages and section reads for long notes."""
 
+import asyncio
 from typing import Any
 
 from fastmcp import Context
 
-from ..constants import ERROR_MESSAGES, READ_TRUNCATED_MESSAGE
+from ..constants import ERROR_MESSAGES, READ_TRUNCATED_MESSAGE, SECTION_MAX_CHARS
 from ..utils import sanitize_path, validate_note_path
 from ..utils.filesystem import get_vault
+from ..utils.markdown_sections import (
+    Heading,
+    find_section_bounds,
+    parse_heading,
+    scan_headings,
+)
 from ..utils.validation import validate_read_window
-from .section_editing import _find_section_bounds, _parse_heading, _section_end
 
 # ponytail: fixed 50-entry outline ceiling. It drops the deepest heading level
 # first, then keeps the first 50 entries. Add a parameter if agents need more.
@@ -28,10 +34,11 @@ def _line_starts(lines: list[str], text_length: int) -> list[int]:
 def _select_section(text: str, section: str, path: str) -> str:
     """Text of the first section that matches `section` under the rules of
     edit_note_section: from its heading line to the next heading of the same
-    or a higher level, sub-sections included."""
-    heading = _parse_heading(section)
+    or a higher level, sub-sections included. A section longer than
+    SECTION_MAX_CHARS, the schema limit, is not parsed."""
+    heading = None if len(section) > SECTION_MAX_CHARS else parse_heading(section)
     lines = text.split("\n")
-    bounds = None if heading is None else _find_section_bounds(lines, *heading)
+    bounds = None if heading is None else find_section_bounds(lines, *heading)
     if bounds is None:
         raise ValueError(
             ERROR_MESSAGES["section_not_found"].format(section=section, path=path)
@@ -40,40 +47,34 @@ def _select_section(text: str, section: str, path: str) -> str:
     return text[starts[bounds[0]] : starts[bounds[1]]]
 
 
-def _cap_outline(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _cap_outline(headings: list[Heading]) -> list[Heading]:
     """Drop the deepest heading level until at most OUTLINE_MAX_ENTRIES
     remain. When one level is left, keep its first OUTLINE_MAX_ENTRIES."""
-    while len(entries) > OUTLINE_MAX_ENTRIES:
-        deepest = max(entry["level"] for entry in entries)
-        shallower = [entry for entry in entries if entry["level"] < deepest]
+    while len(headings) > OUTLINE_MAX_ENTRIES:
+        deepest = max(heading.level for heading in headings)
+        shallower = [heading for heading in headings if heading.level < deepest]
         if not shallower:
-            return entries[:OUTLINE_MAX_ENTRIES]
-        entries = shallower
-    return entries
+            return headings[:OUTLINE_MAX_ENTRIES]
+        headings = shallower
+    return headings
 
 
 def _build_outline(text: str) -> list[dict[str, Any]]:
     """{heading, level, offset, chars} for each heading in text. offset is the
     start of the heading line; chars runs to the next heading of the same or a
-    higher level, or to the end of text."""
+    higher level, or to the end of text. heading is cut to SECTION_MAX_CHARS:
+    a longer one could not be passed back as section."""
     lines = text.split("\n")
     starts = _line_starts(lines, len(text))
-    entries: list[dict[str, Any]] = []
-    for index, line in enumerate(lines):
-        heading = _parse_heading(line)
-        if heading is None:
-            continue
-        level, title = heading
-        end = _section_end(lines, index, level)
-        entries.append(
-            {
-                "heading": title,
-                "level": level,
-                "offset": starts[index],
-                "chars": starts[end] - starts[index],
-            }
-        )
-    return _cap_outline(entries)
+    return [
+        {
+            "heading": heading.title[:SECTION_MAX_CHARS],
+            "level": heading.level,
+            "offset": starts[heading.start],
+            "chars": starts[heading.end] - starts[heading.start],
+        }
+        for heading in _cap_outline(scan_headings(lines))
+    ]
 
 
 def _page_end(text: str, offset: int, max_chars: int) -> int:
@@ -87,13 +88,58 @@ def _page_end(text: str, offset: int, max_chars: int) -> int:
     return window_end if newline == -1 else newline + 1
 
 
+def _page_details(
+    note_text: str,
+    offset: int,
+    page_size: int,
+    metadata: dict[str, Any],
+    section: str | None,
+    path: str,
+) -> dict[str, Any]:
+    """`details` of a read: {content, metadata} when the text fits from
+    offset 0, else one page (RESPONSE_STRUCTURES["read_page"]). section, when
+    set, comes first, so the reply shows that it holds part of the note. Pure
+    and CPU-bound: read_note runs it in a thread."""
+    text = note_text if section is None else _select_section(note_text, section, path)
+    head = {} if section is None else {"section": section}
+    if offset == 0 and len(text) <= page_size:
+        return {**head, "content": text, "metadata": metadata}
+
+    if offset >= len(text):
+        raise ValueError(
+            ERROR_MESSAGES["read_offset_out_of_range"].format(
+                offset=offset, total_chars=len(text), path=path
+            )
+        )
+
+    end = _page_end(text, offset, page_size)
+    truncated = end < len(text)
+    # Flags and message first: they tell the agent that it holds part of the text.
+    details: dict[str, Any] = {
+        **head,
+        "truncated": truncated,
+        "next_offset": end if truncated else None,
+        "total_chars": len(text),
+    }
+    if truncated:
+        details["message"] = READ_TRUNCATED_MESSAGE.format(
+            start=offset, next_offset=end, total_chars=len(text)
+        )
+    return {
+        **details,
+        "content": text[offset:end],
+        "metadata": metadata,
+        "outline": _build_outline(text),
+    }
+
+
 async def read_note(
     path: str,
     offset: int = 0,
     max_chars: int | None = None,
     section: str | None = None,
     ctx: Context | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """
     Read the content and metadata of a specific note.
 
@@ -113,9 +159,10 @@ async def read_note(
 
     Returns:
         {success, path, operation, details: {content, metadata}} when the text
-        fits in one page from offset 0. Else details also holds truncated,
-        next_offset, total_chars, outline, and (when text remains) message --
-        see RESPONSE_STRUCTURES["read_page"].
+        fits in one page from offset 0. Else details holds truncated,
+        next_offset, total_chars, message (when text remains), content,
+        metadata, and outline -- see RESPONSE_STRUCTURES["read_page"]. Either
+        way, details starts with section when you passed one.
 
     Example:
         >>> await read_note("Projects/My Project.md", ctx=ctx)
@@ -154,47 +201,16 @@ async def read_note(
     except FileNotFoundError:
         raise FileNotFoundError(ERROR_MESSAGES["note_not_found"].format(path=path))
 
-    text = (
-        note.content
-        if section is None
-        else _select_section(note.content, section, path)
-    )
     page_size = vault.read_max_chars if max_chars is None else max_chars
-    metadata = note.metadata.model_dump(exclude_none=True)
-
-    # A text that fits from offset 0 keeps today's response, byte for byte.
-    if offset == 0 and len(text) <= page_size:
-        return {
-            "success": True,
-            "path": note.path,
-            "operation": "read",
-            "details": {"content": text, "metadata": metadata},
-        }
-
-    if offset >= len(text):
-        raise ValueError(
-            ERROR_MESSAGES["read_offset_out_of_range"].format(
-                offset=offset, total_chars=len(text), path=path
-            )
-        )
-
-    end = _page_end(text, offset, page_size)
-    truncated = end < len(text)
-    details: dict[str, Any] = {
-        "content": text[offset:end],
-        "metadata": metadata,
-        "truncated": truncated,
-        "next_offset": end if truncated else None,
-        "total_chars": len(text),
-        "outline": _build_outline(text),
-    }
-    if truncated:
-        details["message"] = READ_TRUNCATED_MESSAGE.format(
-            start=offset, next_offset=end, total_chars=len(text)
-        )
-    return {
-        "success": True,
-        "path": note.path,
-        "operation": "read",
-        "details": details,
-    }
+    # Seconds of CPU on a crafted 10 MB note: run it off the event loop. Each
+    # regex match is one short line, so the thread lets go of the GIL often.
+    details = await asyncio.to_thread(
+        _page_details,
+        note.content,
+        offset,
+        page_size,
+        note.metadata.model_dump(exclude_none=True),
+        section,
+        path,
+    )
+    return {"success": True, "path": note.path, "operation": "read", "details": details}

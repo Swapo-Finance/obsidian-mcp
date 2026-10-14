@@ -60,6 +60,7 @@ without knowing which tool invoked it.
   reaching for `# type: ignore`.
 - Link parsing is two module-level regexes in `links.py`: `WIKI_LINK_PATTERN` and
   `MARKDOWN_LINK_PATTERN`. Extend those rather than writing a new link regex elsewhere.
+- Heading grammar is `markdown_sections.py`, shared by `edit_note_section` and `read_note`.
 
 ## Applied rules
 

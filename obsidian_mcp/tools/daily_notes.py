@@ -42,9 +42,9 @@ async def add_daily_note(
 
     Returns:
         {path, created, appended: true}. Daily notes are always exempt from
-        OBSIDIAN_MAX_NOTE_LINES / _APPEND_HEADROOM_LINES, and are never
-        deleted by this tool — cleaning up old daily notes is up to the
-        caller/client.
+        OBSIDIAN_MAX_NOTE_LINES / _APPEND_HEADROOM_LINES / OBSIDIAN_MAX_NOTE_CHARS,
+        and are never deleted by this tool — cleaning up old daily notes is up
+        to the caller/client.
     """
     is_valid, error_msg = validate_content(content)
     if not is_valid:

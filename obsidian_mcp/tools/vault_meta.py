@@ -210,10 +210,10 @@ async def get_help(ctx: Context | None = None) -> dict[str, Any]:
         ),
         _env_row(
             "OBSIDIAN_MAX_NOTE_CHARS",
-            "int",
+            "int (1 or more)",
             "40000",
             str(vault.max_note_chars),
-            "Character ceiling per note, checked next to OBSIDIAN_MAX_NOTE_LINES on every write, with no append headroom. Daily notes are always exempt.",
+            "Character ceiling per note, checked next to OBSIDIAN_MAX_NOTE_LINES on every write, with no append headroom. Daily notes are always exempt. A value below 1 falls back to 40000.",
             "40000",
         ),
         _env_row(

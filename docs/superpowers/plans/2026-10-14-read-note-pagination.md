@@ -157,7 +157,8 @@ READ_TRUNCATED_MESSAGE = (
     "part of the text. To read the next page, call read_note_tool again with "
     "offset={next_offset} and the same section, if you passed one. To read one "
     "section, pass section with a heading from outline. Read all pages before "
-    "you replace the note with update_note."
+    "you replace the note with update_note. If total_chars or metadata.modified "
+    "changes between pages, the note changed: read again from offset 0."
 )
 ```
 

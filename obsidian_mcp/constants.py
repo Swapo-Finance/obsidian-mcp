@@ -22,6 +22,14 @@ READ_MAX_CHARS_DEFAULT = 40_000
 READ_MAX_CHARS_MIN = 1_000
 READ_MAX_CHARS_MAX = 1_000_000
 
+# Schema of a heading argument (read_note section, edit_note_section
+# section_identifier). \S right after the spaces keeps the match linear: with
+# ".+" there, "#" plus many spaces and two line breaks took seconds to reject.
+SECTION_HEADING_PATTERN = r"^#{1,6}\s+\S.*$"
+# Longest heading argument. Also the cut of an outline heading: a longer one
+# could not be passed back as section.
+SECTION_MAX_CHARS = 200
+
 # Added to a paged read_note response when text remains after the page. Same
 # role as the "message" of a truncated search result.
 READ_TRUNCATED_MESSAGE = (
@@ -29,7 +37,8 @@ READ_TRUNCATED_MESSAGE = (
     "part of the text. To read the next page, call read_note_tool again with "
     "offset={next_offset} and the same section, if you passed one. To read one "
     "section, pass section with a heading from outline. Read all pages before "
-    "you replace the note with update_note."
+    "you replace the note with update_note. If total_chars or metadata.modified "
+    "changes between pages, the note changed: read again from offset 0."
 )
 
 # Error messages - Actionable and specific
@@ -225,19 +234,21 @@ RESPONSE_STRUCTURES = {
     },
     # Paged read (read_note_tool): offset > 0, or the text does not fit in one
     # page. A read that fits from offset 0 keeps crud_success with details
-    # {content, metadata}.
+    # {content, metadata}, or {section, content, metadata} for a section read.
+    # The key order below is the order in the response.
     "read_page": {
         "success": True,
         "path": str,  # The note path
         "operation": str,  # "read"
         "details": {
-            "content": str,  # This page of the note (or section) text
-            "metadata": dict,  # Same as an unpaged read
+            "section": str,  # Only for a section read: the section argument
             "truncated": bool,  # True when text remains after this page
             "next_offset": int,  # Start of the next page; None on the last page
             "total_chars": int,  # Length of the whole note (or section) text
-            "outline": list,  # [{heading, level, offset, chars}], 50 entries max
             "message": str,  # Only when truncated: how to read the next page
+            "content": str,  # This page of the note (or section) text
+            "metadata": dict,  # Same as an unpaged read, on every page
+            "outline": list,  # [{heading, level, offset, chars}], 50 entries max
         },
     },
     # Error response

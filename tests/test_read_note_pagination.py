@@ -6,6 +6,7 @@ save the result to a file. See
 docs/superpowers/specs/2026-10-14-read-note-pagination-design.md.
 """
 
+import logging
 import re
 
 import pydantic_core
@@ -14,7 +15,7 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from mcp.types import TextContent
 
-from obsidian_mcp.constants import ERROR_MESSAGES
+from obsidian_mcp.constants import ERROR_MESSAGES, SECTION_MAX_CHARS
 from obsidian_mcp.server import mcp, read_note_tool
 from obsidian_mcp.tools.note_read import read_note
 from obsidian_mcp.utils.filesystem import init_vault
@@ -25,6 +26,24 @@ DOC = (
     "# Doc\n\nIntro.\n\n"
     "## Tasks\n\n- one\n\n### Sub\n\nsub body\n\n"
     "## Notes\n\nnotes body\n"
+)
+# H1-H4 nested, a long plain tail, then a bare "## " line: it closes H2-H4 but
+# is not a heading, so it is not in the outline. H1 runs to the end.
+DEEP_TAIL = "# H1\n## H2\n### H3\n#### H4\n" + "plain\n" * 300 + "## \n" + "more\n" * 5
+# Keys of a paged details, in order; section comes first when it is set.
+PAGE_KEYS = [
+    "truncated",
+    "next_offset",
+    "total_chars",
+    "message",
+    "content",
+    "metadata",
+    "outline",
+]
+LAST_PAGE_KEYS = [key for key in PAGE_KEYS if key != "message"]
+CHANGED_NOTE_SENTENCE = (
+    "If total_chars or metadata.modified changes between pages, the note "
+    "changed: read again from offset 0."
 )
 
 
@@ -70,10 +89,25 @@ class TestReadMaxCharsEnv:
         assert init_vault(str(tmp_path)).read_max_chars == int(raw)
 
     @pytest.mark.parametrize("raw", ["999", "1000001"])
-    def test_value_out_of_range_falls_back_to_default(self, tmp_path, monkeypatch, raw):
+    def test_value_out_of_range_falls_back_to_default(
+        self, tmp_path, monkeypatch, caplog, raw
+    ):
         monkeypatch.setenv("OBSIDIAN_READ_MAX_CHARS", raw)
 
-        assert init_vault(str(tmp_path)).read_max_chars == 40000
+        with caplog.at_level(logging.WARNING):
+            assert init_vault(str(tmp_path)).read_max_chars == 40000
+
+        assert f"OBSIDIAN_READ_MAX_CHARS={raw}" in caplog.text
+
+    def test_max_note_chars_below_one_falls_back_with_a_warning(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("OBSIDIAN_MAX_NOTE_CHARS", "0")
+
+        with caplog.at_level(logging.WARNING):
+            assert init_vault(str(tmp_path)).max_note_chars == 40000
+
+        assert "OBSIDIAN_MAX_NOTE_CHARS=0" in caplog.text
 
 
 class TestPagedRead:
@@ -103,6 +137,8 @@ class TestPagedRead:
 
         details = (await read_note("long.md", max_chars=1000))["details"]
 
+        # The flags and the message come before the long content.
+        assert list(details) == PAGE_KEYS
         assert details["content"] == TEN_LINES[:900]
         assert details["truncated"] is True
         assert details["next_offset"] == 900
@@ -110,6 +146,7 @@ class TestPagedRead:
         # The message tells how to go on and warns against a partial replace.
         assert "offset=900" in details["message"]
         assert "update_note" in details["message"]
+        assert CHANGED_NOTE_SENTENCE in details["message"]
 
     @pytest.mark.asyncio
     async def test_pages_join_back_to_the_exact_note(self, vault):
@@ -126,10 +163,10 @@ class TestPagedRead:
 
         details = (await read_note("long.md", offset=2700, max_chars=1000))["details"]
 
+        assert list(details) == LAST_PAGE_KEYS
         assert details["content"] == TEN_LINES[2700:]
         assert details["truncated"] is False
         assert details["next_offset"] is None
-        assert "message" not in details
 
     @pytest.mark.asyncio
     async def test_line_longer_than_the_window_is_cut_hard(self, vault):
@@ -138,6 +175,43 @@ class TestPagedRead:
         pages = await _read_all("wide.md", max_chars=1000)
 
         assert [len(page) for page in pages] == [1000, 1000, 500]
+
+    @pytest.mark.asyncio
+    async def test_hard_cut_ignores_a_newline_before_the_offset(self, vault):
+        # A cut at that newline would give an empty page and a next_offset that
+        # never moves: an agent that follows it would loop forever.
+        _write(vault, "wide.md", "title\n" + "z" * 2500)
+
+        details = (await read_note("wide.md", offset=6, max_chars=1000))["details"]
+
+        assert details["next_offset"] == 1006
+
+    @pytest.mark.parametrize(
+        ("length", "keys"), [(1000, ["content", "metadata"]), (1001, PAGE_KEYS)]
+    )
+    @pytest.mark.asyncio
+    async def test_text_of_max_chars_fits_and_one_more_is_paged(
+        self, vault, length, keys
+    ):
+        _write(vault, "edge.md", "e" * length)
+
+        details = (await read_note("edge.md", max_chars=1000))["details"]
+
+        assert list(details) == keys
+
+    @pytest.mark.asyncio
+    async def test_window_that_reaches_the_end_of_the_text_is_the_last_page(
+        self, vault
+    ):
+        # offset + max_chars == len(text), with a newline inside the window.
+        text = "a" * 1499 + "\n" + "b" * 500
+        _write(vault, "end.md", text)
+
+        details = (await read_note("end.md", offset=1000, max_chars=1000))["details"]
+
+        assert details["truncated"] is False
+        assert details["next_offset"] is None
+        assert details["content"] == text[1000:]
 
     @pytest.mark.asyncio
     async def test_offset_inside_a_line_starts_the_page_there(self, vault):
@@ -156,7 +230,7 @@ class TestPagedRead:
         pages = await _read_all("utf.md", max_chars=1000)
 
         assert "".join(pages) == text
-        assert all(len(page) <= 1000 for page in pages)
+        assert [len(page) for page in pages] == [844, 844, 421]
 
     @pytest.mark.asyncio
     async def test_page_size_defaults_to_obsidian_read_max_chars(
@@ -271,6 +345,36 @@ class TestOutline:
         assert len(details["outline"]) == 50
         assert details["outline"][-1]["heading"] == "H49"
 
+    @pytest.mark.asyncio
+    async def test_outline_keeps_all_entries_when_there_are_exactly_50(self, vault):
+        # 5 H1 + 45 H2 = 50 headings over two levels: no level is dropped.
+        text = "".join(
+            f"# H{i}\n" + "".join(f"## S{i}.{j}\n" for j in range(9)) for i in range(5)
+        )
+        _write(vault, "fifty.md", text)
+
+        details = (await read_note("fifty.md", offset=1, max_chars=1000))["details"]
+
+        assert len(details["outline"]) == 50
+
+    @pytest.mark.asyncio
+    async def test_outline_cuts_a_long_heading_to_the_section_limit(self, vault):
+        title = "t" * 5000
+        text = f"# {title}\nbody\n"
+        _write(vault, "wide.md", text)
+
+        details = (await read_note("wide.md", offset=1, max_chars=1000))["details"]
+
+        # A longer heading could not be passed back as section anyway.
+        assert details["outline"] == [
+            {
+                "heading": title[:SECTION_MAX_CHARS],
+                "level": 1,
+                "offset": 0,
+                "chars": len(text),
+            }
+        ]
+
 
 class TestSectionRead:
     @pytest.mark.asyncio
@@ -280,20 +384,26 @@ class TestSectionRead:
         result = await read_note("doc.md", section="## tasks")  # case-insensitive
 
         expected = DOC[DOC.index("## Tasks") : DOC.index("## Notes")]
+        # Fits: today's shape, with the section argument first, so the reply
+        # shows that it holds only part of the note.
+        assert list(result["details"]) == ["section", "content", "metadata"]
+        assert result["details"]["section"] == "## tasks"
         assert result["details"]["content"] == expected
-        assert set(result["details"]) == {"content", "metadata"}  # fits: today's shape
 
+    @pytest.mark.parametrize("text", [DOC, DEEP_TAIL], ids=["doc", "deep_tail"])
     @pytest.mark.asyncio
-    async def test_outline_sizes_match_the_section_reads(self, vault):
-        _write(vault, "doc.md", DOC)
+    async def test_outline_sizes_match_the_section_reads(self, vault, text):
+        _write(vault, "doc.md", text)
         outline = (await read_note("doc.md", offset=1, max_chars=1000))["details"][
             "outline"
         ]
 
+        assert outline
         for entry in outline:
             heading = "#" * entry["level"] + " " + entry["heading"]
             content = (await read_note("doc.md", section=heading))["details"]["content"]
-            assert content == DOC[entry["offset"] : entry["offset"] + entry["chars"]]
+            assert len(content) == entry["chars"]
+            assert content == text[entry["offset"] : entry["offset"] + entry["chars"]]
 
     @pytest.mark.asyncio
     async def test_long_section_is_paged_from_its_heading(self, vault):
@@ -309,6 +419,9 @@ class TestSectionRead:
             )
         )["details"]
 
+        assert list(first) == ["section", *PAGE_KEYS]
+        assert list(second) == ["section", *LAST_PAGE_KEYS]
+        assert first["section"] == second["section"] == "## Big"
         assert first["total_chars"] == len(section)
         assert first["next_offset"] == 907
         # The next call must repeat section, or it reads whole-note text.
@@ -346,6 +459,18 @@ class TestSectionRead:
         ):
             await read_note("doc.md", section="Tasks")
 
+    @pytest.mark.asyncio
+    async def test_section_over_the_length_limit_is_not_parsed(self, vault):
+        section = "## " + "t" * (SECTION_MAX_CHARS - 2)  # 201 characters
+        # The note has that very heading: only the length check rejects it.
+        _write(vault, "doc.md", section + "\nbody\n")
+
+        with pytest.raises(
+            ValueError,
+            match=_error("section_not_found", section=section, path="doc.md"),
+        ):
+            await read_note("doc.md", section=section)
+
 
 class TestReadNoteToolWrapper:
     @pytest.mark.asyncio
@@ -368,6 +493,50 @@ class TestReadNoteToolWrapper:
             await read_note_tool.fn(path="doc.md", offset=10_000)
         with pytest.raises(ToolError):
             await read_note_tool.fn(path="doc.md", section="## Missing")
+
+    @pytest.mark.parametrize(
+        "heading", ["##   ", "#" + " " * 100 + "\nx\ny"], ids=["blank", "breaks"]
+    )
+    @pytest.mark.parametrize(
+        ("tool", "key", "extra"),
+        [
+            ("read_note_tool", "section", {}),
+            ("edit_note_section_tool", "section_identifier", {"content": "added"}),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_schema_rejects_a_heading_that_is_not_one_titled_line(
+        self, vault, tool, key, extra, heading
+    ):
+        # "##  " parses as a heading with an empty title, so "##   " would match
+        # it: only the schema stops it. The second value used to cost quadratic
+        # regex time in the schema check.
+        _write(vault, "doc.md", "# Doc\n##  \nbody\n")
+
+        async with Client(mcp) as client:
+            with pytest.raises(ToolError):
+                await client.call_tool(tool, {"path": "doc.md", key: heading, **extra})
+
+    @pytest.mark.asyncio
+    async def test_write_tools_warn_that_a_partial_read_is_not_the_note(self):
+        async with Client(mcp) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+
+        update, create = tools["update_note_tool"], tools["create_note_tool"]
+        for text in (
+            update.description,
+            update.inputSchema["properties"]["content"]["description"],
+            create.inputSchema["properties"]["overwrite"]["description"],
+        ):
+            assert text is not None
+            for phrase in (
+                "truncated=true",
+                "offset or section",
+                "only part of the note",
+                "merge_strategy='append'",
+                "edit_note_section_tool",
+            ):
+                assert phrase in text
 
     @pytest.mark.asyncio
     async def test_63544_char_note_result_stays_under_the_client_limit(self, vault):

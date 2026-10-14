@@ -1,7 +1,5 @@
 """Section-level note editing: edit_note_section."""
 
-import re
-import unicodedata
 from typing import Any
 
 from fastmcp import Context
@@ -9,50 +7,9 @@ from fastmcp import Context
 from ..constants import ERROR_MESSAGES
 from ..utils import sanitize_path, validate_note_path
 from ..utils.filesystem import get_vault
+from ..utils.markdown_sections import find_section_bounds, parse_heading
 from .link_management import validate_wikilinks_for_write
 from .write_policy import _serialize_note_writes, _size_policy_warning
-
-
-def _parse_heading(line: str) -> tuple[int, str] | None:
-    """(level, stripped text) of a markdown heading line, or None when the line
-    is not a heading. The one heading parser of edit_note_section and
-    read_note."""
-    match = re.match(r"^(#{1,6})\s+(.+)$", line)
-    if not match:
-        return None
-    return len(match.group(1)), match.group(2).strip()
-
-
-def _section_end(lines: list[str], start: int, level: int) -> int:
-    """Index of the first line after `start` that is a heading of `level` or a
-    higher level (fewer #), or len(lines) when the section runs to the end."""
-    for j in range(start + 1, len(lines)):
-        next_match = re.match(r"^(#{1,6})\s+", lines[j])
-        if next_match and len(next_match.group(1)) <= level:
-            return j
-    return len(lines)
-
-
-def _find_section_bounds(
-    lines: list[str], heading_level: int, heading_text: str
-) -> tuple[int, int] | None:
-    """Locate the first heading (case-insensitive, NFC-normalized) matching
-    heading_level/heading_text -- first match wins when a heading repeats.
-
-    Returns (section_start, section_end): section_end is the index of the
-    next heading of the same or higher level, or len(lines) if the section
-    runs to end of file. Returns None if no heading matches.
-    """
-    normalized_target = unicodedata.normalize("NFC", heading_text.lower())
-    for i, line in enumerate(lines):
-        heading = _parse_heading(line)
-        if heading is None or heading[0] != heading_level:
-            continue
-        if unicodedata.normalize("NFC", heading[1].lower()) != normalized_target:
-            continue
-        return i, _section_end(lines, i, heading_level)
-
-    return None
 
 
 def _apply_insert_after(lines: list[str], section_start: int, content: str) -> None:
@@ -173,7 +130,7 @@ async def edit_note_section(
     content, warnings = await validate_wikilinks_for_write(vault, content)
 
     # Parse the section identifier to extract heading level and text
-    heading = _parse_heading(section_identifier)
+    heading = parse_heading(section_identifier)
     if heading is None:
         raise ValueError(
             f"Invalid section identifier: {section_identifier}. Must be a markdown heading (e.g., '## Section Name')"
@@ -182,7 +139,7 @@ async def edit_note_section(
 
     # Find the section in the content
     lines = note_content.split("\n")
-    bounds = _find_section_bounds(lines, heading_level, heading_text)
+    bounds = find_section_bounds(lines, heading_level, heading_text)
 
     # Handle missing section
     if bounds is None:

@@ -110,10 +110,11 @@ MCP server (FastMCP) exposing an Obsidian vault over **direct filesystem access*
 - `obsidian_mcp/utils/vault_config.py` — facade re-exporting path normalization (`vault_paths.py`), folder templates (`templates.py`), slug/tag kebab (`slugs.py`), and frontmatter requirements (`frontmatter_requirements.py`); owns note-size policy directly. Consumed by `filesystem.py` and `note_management.py`.
 - `obsidian_mcp/utils/validation.py` — validators returning `(ok, error)` plus the `validate_params` decorator.
 - `obsidian_mcp/utils/validators.py` — `validate_note_path`, `sanitize_path`, `is_markdown_file`; this is what `tools/` imports via `..utils`. ⚠️ `validate_note_path` is duplicated across both files — check which one you are changing.
+- `obsidian_mcp/utils/markdown_sections.py` — the markdown heading grammar (`parse_heading`, `section_end`, `find_section_bounds`, one-pass `scan_headings`), shared by `edit_note_section` and `read_note`.
 - `obsidian_mcp/models/obsidian.py` — `Note` / `NoteMetadata` pydantic models, the shape every tool returns.
 - `obsidian_mcp/constants.py` — `ERROR_MESSAGES` (actionable, numbered) and `RESPONSE_STRUCTURES` (the response contract each tool category follows).
 - `obsidian_mcp/configure.py` — the `obsidian-mcp-configure` console script.
-- `tests/` — flat, one file per feature plus `conftest.py` (an autouse fixture that restores `os.environ` and resets the `filesystem.vault` singleton between tests), 598 tests.
+- `tests/` — flat, one file per feature plus `conftest.py` (an autouse fixture that restores `os.environ` and resets the `filesystem.vault` singleton between tests), 612 tests.
 
 Domain-specific guidance lives in nested CLAUDE.md files (loaded on demand):
 

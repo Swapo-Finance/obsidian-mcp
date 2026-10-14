@@ -8,6 +8,7 @@ calls them via self — see filesystem.py.
 """
 
 import logging
+import math
 import os
 
 logger = logging.getLogger(__name__)
@@ -41,18 +42,25 @@ def read_bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("true", "1", "yes", "on")
 
 
-def read_int_env(name: str, default: int) -> int:
+def read_int_env(
+    name: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
     """Read an int-valued env var; fall back to `default` (with a
     warning) if unset, blank, or not a valid integer after stripping
     surrounding whitespace (env vars are always strings — ".strip()"
     makes " 500 " coerce the same as "500") — config never crashes
-    the boot."""
+    the boot. An integer below `minimum` or above `maximum` (each
+    optional, inclusive) also falls back to `default` with a warning."""
     raw = os.getenv(name)
     if raw is None:
         return default
     stripped = raw.strip()
     try:
-        return int(stripped)
+        value = int(stripped)
     except ValueError:
         logger.warning(
             "Invalid %s=%r; must be an integer. Falling back to %d.",
@@ -61,3 +69,16 @@ def read_int_env(name: str, default: int) -> int:
             default,
         )
         return default
+    low = -math.inf if minimum is None else minimum
+    high = math.inf if maximum is None else maximum
+    if not low <= value <= high:
+        logger.warning(
+            "Invalid %s=%d; must be from %s to %s. Falling back to %d.",
+            name,
+            value,
+            low,
+            high,
+            default,
+        )
+        return default
+    return value
