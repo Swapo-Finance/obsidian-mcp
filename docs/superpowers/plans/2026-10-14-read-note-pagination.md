@@ -155,8 +155,9 @@ READ_MAX_CHARS_MAX = 1_000_000
 READ_TRUNCATED_MESSAGE = (
     "Showing characters {start}-{next_offset} of {total_chars}. This page is only "
     "part of the text. To read the next page, call read_note_tool again with "
-    "offset={next_offset}. To read one section, pass section with a heading from "
-    "outline. Read all pages before you replace the note with update_note."
+    "offset={next_offset} and the same section, if you passed one. To read one "
+    "section, pass section with a heading from outline. Read all pages before "
+    "you replace the note with update_note."
 )
 ```
 
