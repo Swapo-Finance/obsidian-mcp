@@ -1,5 +1,7 @@
 # Read Note Pagination Implementation Plan
 
+**Status (2026-10-14):** implemented. The final review changed parts of this plan. The heading parser lives in `obsidian_mcp/utils/markdown_sections.py` with public names. `OBSIDIAN_MAX_NOTE_CHARS` must be 1 or more. The paged response puts `truncated`, `next_offset`, `total_chars`, and `message` before `content`, and a section read adds a `section` key. The spec is the current reference: `docs/superpowers/specs/2026-10-14-read-note-pagination-design.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Return a long note from `read_note_tool` in pages (by offset or by section) under the 50,000-character client limit, and make the write policy flag notes that are long in characters.

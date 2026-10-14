@@ -344,3 +344,7 @@ the help catalog.
 - 40,000 is a character budget, not a byte or token budget. Many quotes, backslashes, or
   emoji make the JSON block larger (an emoji is 2 UTF-16 units). For such notes, lower
   `max_chars` or `OBSIDIAN_READ_MAX_CHARS`.
+- The 200-character heading cap bounds each outline entry, not the outline. A full page
+  plus 50 headings of about 200 characters gives a text block of about 53,500 characters.
+  The 50,000-character goal holds when the outline headings average about 120 characters
+  or less. For a note with many long headings, lower `max_chars`.
