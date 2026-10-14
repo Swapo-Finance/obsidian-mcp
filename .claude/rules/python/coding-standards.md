@@ -34,10 +34,11 @@ paths:
 
 ## Tooling — as configured in THIS project
 
-- **Ruff** for lint + format (replaces black + isort + flake8). Full default ruleset, no `[tool.ruff]` overrides.
+- **Ruff** for lint + format (replaces black + isort + flake8). Full default ruleset. The `ignore` list in `[tool.ruff.lint]` (`pyproject.toml`) gives a rationale for each entry.
 - **Pyright** for static typing — `[tool.pyright]` in `pyproject.toml`, mode `standard`, `pythonVersion = "3.10"`. Do not add mypy: two typecheckers with different opinions is worse than one.
 - **pytest** for tests. Requires `OBSIDIAN_VAULT_PATH` pointing at an existing directory.
 - `pyproject.toml` as the single tooling configuration file.
 
 Both `ruff` and `pyright` are dev dependencies installed into `.venv/`. Gate on the
-files you changed, not the whole tree — see `.claude/rules/verification.md`.
+whole tree (`ruff check obsidian_mcp tests`, `pyright`) with zero findings — see
+`.claude/rules/verification.md`.
