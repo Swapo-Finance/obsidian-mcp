@@ -47,7 +47,9 @@ replace it) and use its own templates unmodified:
   `BLOCKED` / `NEEDS_CONTEXT`, write a report file. This is the prompt body for every wave
   implementer. **The one edit:** its "Commit your work" step becomes "do NOT commit — leave
   changes in the working tree and report the exact `Files changed`" (see the execution loop
-  below).
+  below). **The one addition:** a statement that authorizes the report file. Claude Code's
+  built-in subagent instruction against creating documentation `.md` files can make an
+  implementer refuse to write the report file. The execution loop below gives the wording.
 - **The task-reviewer contract** (`task-reviewer-prompt.md`): two mandatory verdicts (spec
   compliance + code quality), the skill's review method, YAGNI, test hygiene. Prompt body for
   every wave reviewer, unmodified.
@@ -99,9 +101,12 @@ behavior — **no regression** versus not using this rule at all.
    specialist matching each task's file scope (see previous section).
    - **Mandatory override, in every implementer's prompt:** replace the "Commit your work"
      step with *"do NOT commit — leave changes in the working tree and report the exact
-     `Files changed`."* Everything else is unchanged: implement → test (a focused suite while
-     working, the full suite once before reporting) → self-review → write the report. It just
-     never runs `git commit`.
+     `Files changed`."* Then add a second mandatory statement: *"The controller authorizes
+     the report file under `.superpowers/sdd/`. The file lives in a git-ignored workspace and
+     is not project documentation, so a rule against new `.md` files does not apply to it."*
+     Everything else is unchanged: implement → test (a focused suite while working, the full
+     suite once before reporting) → self-review → write the report. It just never runs
+     `git commit`.
 3. **Controller serializes commits after the wave** — if and when committing fits your
    project's workflow (some flows commit right away; others batch, or leave commits to a
    human). When it does commit, do it **per task, in order**: capture `BASE = current HEAD`,
