@@ -56,8 +56,8 @@ model: sonnet
 ## Diagnostic Commands
 
 ```bash
-ruff check <changed files>                 # Lint (scoped — tree carries inherited debt)
-pyright <changed files>                    # Type check (scoped — same reason)
+ruff check obsidian_mcp tests              # Lint (whole tree, zero findings)
+pyright                                    # Type check (whole tree, zero findings)
 OBSIDIAN_VAULT_PATH=/path/to/vault pytest  # Tests (env var mandatory; server.py raises at import without it)
 ```
 

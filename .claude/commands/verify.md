@@ -11,7 +11,7 @@ $ARGUMENTS
 
 ## 🔴 CRITICAL RULES
 
-1. **Run the project's real checks** — `ruff check <changed files>`, `pyright <changed files>`, `OBSIDIAN_VAULT_PATH=/path/to/vault pytest`
+1. **Run the project's real checks** — `ruff check obsidian_mcp tests` and `pyright` (whole tree, zero findings), `OBSIDIAN_VAULT_PATH=/path/to/vault pytest`
 2. **Execute, don't inspect** — Run the code, don't just read it
 3. **Report evidence** — Show actual output, not assumptions
 4. **Cover edge cases** — Test error paths, not just happy path
@@ -29,7 +29,7 @@ CONTEXT:
 
 WORKFLOW:
 1. IDENTIFY what changed (files, functions, behavior)
-2. DETERMINE verification method — `ruff check`, `pyright`, `OBSIDIAN_VAULT_PATH=/path/to/vault pytest`
+2. DETERMINE verification method — `ruff check obsidian_mcp tests`, `pyright`, `OBSIDIAN_VAULT_PATH=/path/to/vault pytest`
 3. EXECUTE verification commands
 4. REPORT evidence of success or failure
 5. FLAG anything that couldn't be verified automatically

@@ -72,9 +72,9 @@ venvPath = "."
 venv = ".venv"
 # "standard" is pyright's default and the right level for this tree: it catches
 # the Optional-access and argument-type bugs that matter here without demanding
-# full annotation coverage. The tree currently reports ~133 findings, so the
-# gates (Stop hook, CI) check only the files a change actually touches rather
-# than failing on inherited debt. Tighten to "strict" once the backlog clears.
+# full annotation coverage. The tree must report 0 errors at this level. Agents
+# run `pyright` on the whole tree. The Stop hook and CI check only the changed
+# files. Tighten to "strict" only if full annotation coverage becomes a goal.
 typeCheckingMode = "standard"
 
 # No [tool.ruff] `target-version` / `line-length` here on purpose: ruff already
