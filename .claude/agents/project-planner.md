@@ -312,9 +312,9 @@ Before assigning agents, determine project type:
 #### 1. Run All Verifications (RECOMMENDED)
 
 ```bash
-# Run this project's real verification suite:
-ruff check <changed files>
-pyright <changed files>
+# Run this project's real verification suite (lint and typecheck on the whole tree, zero findings):
+ruff check obsidian_mcp tests
+pyright
 OBSIDIAN_VAULT_PATH=/path/to/vault pytest
 ```
 

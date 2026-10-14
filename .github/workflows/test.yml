@@ -66,9 +66,9 @@ jobs:
           echo "files=$FILES" >> "$GITHUB_OUTPUT"
           echo "Changed: ${FILES:-none}"
 
-      # Advisory only: the tree carries pre-existing ruff (~717) and pyright (~133)
-      # findings, so a PR touching a legacy file would fail on debt it did not
-      # introduce. Flip continue-on-error to false once the backlog is cleared.
+      # Advisory only: both steps check only the changed files, and
+      # continue-on-error means a finding does not fail the build. Set
+      # continue-on-error to false to make a finding fail the build.
       - name: Lint changed Python files
         if: steps.changed.outputs.files != ''
         continue-on-error: true

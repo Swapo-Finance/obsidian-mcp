@@ -37,11 +37,11 @@ $ARGUMENTS
 
 **Routing** (full table in Phase 4): `obsidian_mcp/tools/**`, `server.py`, `app.py`, `mcp_*.py` → `backend-specialist` · broken MCP tool contract → `backend-specialist` implements the fix (`mcp-tool-contract-reviewer` only audits, never fixes) · `utils/persistent_index.py` / `utils/vault_cache.py` → `database-architect` · tests → `test-engineer` · security → `security-reviewer` · docs (`README.md`, `CLAUDE.md`, docstrings) → `documentation-writer` · fallback → `orchestrator`. Multiple domains → parallel. **1 file = 1 agent** (never 2 agents in parallel on the same file).
 
-**Compilation and Syntax Errors — MANDATORY:** everything `ruff check`, `pyright`, or `pytest` report on the changed files = **all** fixed before closing out — any file among those changed, any author. **Never** report as "pre-existing, not related" and close out.
+**Compilation and Syntax Errors — MANDATORY:** everything `ruff check`, `pyright`, or `pytest` report = **all** fixed before closing out — any file, any author. **Never** report as "pre-existing, not related" and close out.
 
-> ⚠️ **Scope (differs from the source command):** lint and typecheck run **only on the changed files**, never on the whole tree — see root `CLAUDE.md`, "Conventions" section, last item. But whatever the **scoped** commands report is 100% mandatory to fix, no "pre-existing" exception. Genuinely out of scope (broken external dependency, auto-generated file) → explain explicitly why.
+> ⚠️ **Scope:** lint and typecheck run on the **whole tree** (`ruff check obsidian_mcp tests`, `pyright`) and must report zero findings — see root `CLAUDE.md`, "Conventions" section. Whatever they report is 100% mandatory to fix, no "pre-existing" exception. Genuinely out of scope (broken external dependency, auto-generated file) → explain explicitly why.
 >
-> Inherited debt, measured — not the stale figures still quoted in `CLAUDE.md` and `.claude/rules/verification.md` (~717 ruff / ~133 pyright, from before a cleanup pass): **18 ruff** and **9 pyright** findings tree-wide, plus **25 `C901`** complexity findings (21 in `obsidian_mcp/`, 4 in vendored harness scripts). The scoping rule still holds — the backlog is separate work — but it is small enough that a finding in a file you touched is almost certainly worth fixing rather than deferring.
+> The one exception is the `C901` complexity gate. It runs only on the changed files (see Phase 1).
 
 ### Violations — Process
 
@@ -159,23 +159,24 @@ Fallback: `graphify` unavailable → `wc -l` on the diff files for sizes, log `�
 
 ## Phase 1 — Integrity Gate `[BACKGROUND · fires BEFORE the wave, collected in Phase 5]`
 
-One bash with `run_in_background: true` (does not block Phase 2):
+One bash with `run_in_background: true` (does not block Phase 2). Lint and typecheck cover the whole tree. The `C901` run covers only the changed files:
 
 ```bash
+ruff check obsidian_mcp tests && \
 ruff check --extend-select C901 <changed files> && \
-pyright <changed files> && \
+pyright && \
 OBSIDIAN_VAULT_PATH=$(mktemp -d) pytest
 ```
 
 > `OBSIDIAN_VAULT_PATH` just needs to point to an **existing** directory — `server.py` raises on import if it's missing and takes down the entire collection, not just one test. The tests create their own temporary vaults, so `$(mktemp -d)` is enough; there's no canonical project vault. If `ruff`/`pyright` say "not found", the venv isn't on PATH — use `uv run ruff` / `uv run pyright`.
 
-**Inviolable rule (evaluated at collection, Phase 5):** failure → group errors by domain → parallel fix subagents (Protocol) → re-run until exit 0. Review does NOT close out without green on the scoped files.
+**Inviolable rule (evaluated at collection, Phase 5):** failure → group errors by domain → parallel fix subagents (Protocol) → re-run until exit 0. Review does NOT close out until every command in this block is green.
 
 ### Complexity gate (`C901`)
 
 This replaces the source command's `js-quality-gates`, of which only the cyclomatic-complexity half has an equivalent here. `C901` is **not** in ruff's default ruleset and is **not** enabled in `pyproject.toml` — it is turned on by `--extend-select` **in this command only**, deliberately:
 
-- Enabling it globally in `[tool.ruff.lint]` would make the Stop hook (`verify-on-stop.mjs`, which runs `ruff check` scoped to changed `.py` files) and CI fail on **21 pre-existing violations** in `obsidian_mcp/` the moment anyone touches those files — including `search_property_engine.py` (`_search_by_property`, CC 46), `batch_properties.py` (CC 37), and `find_orphaned_notes.py` (CC 30), each a real refactor, not a quick fix.
+- Enabling it globally in `[tool.ruff.lint]` would make the whole-tree gate (`ruff check obsidian_mcp tests`) fail on the C901 findings that `obsidian_mcp/` still carries. It would also make the Stop hook (`verify-on-stop.mjs`, which runs `ruff check` only on the changed `.py` files) block the moment anyone touches one of those files. Each one is a real refactor, not a quick fix. List them with `ruff check --extend-select C901 obsidian_mcp tests`.
 - As a review-only flag, the gate still bites exactly where it should — a file you changed that exceeds `max-complexity=10` blocks the review — without turning every unrelated session into a refactoring project.
 
 A `C901` finding on a changed file is a **finding**, not a score: route it to Phase 4 like any blocker (splitting the function is the fix; raising the threshold is not). A `C901` on a file merely *adjacent* to the diff is inherited debt — report only.
@@ -271,7 +272,7 @@ Apply the OWASP Top 10:2025 checklist from `checklists.md` to the diff files. Th
 
 #### R4 — Python Idioms & Quality `[python-reviewer · sonnet]`
 
-Reads (mandatory): `.claude/rules/python/coding-standards.md`, `.claude/rules/ecc/python/coding-style.md`, `.claude/rules/ecc/python/patterns.md`. Applies its own checklist (injection, bare except, mutable default args, `isinstance` vs `type() ==`, type hints, PEP 8) to the `.py` files in the diff. Runs `ruff check --extend-select C901 <diff-files>` and `pyright <diff-files>` — dedup with Phase 1: report only what the integrity gate doesn't catch (idioms and smells that lint doesn't pick up). For any `C901` hit, name the offending function and the branch structure driving the count — the fix is splitting it, never raising the threshold.
+Reads (mandatory): `.claude/rules/python/coding-standards.md`, `.claude/rules/ecc/python/coding-style.md`, `.claude/rules/ecc/python/patterns.md`. Applies its own checklist (injection, bare except, mutable default args, `isinstance` vs `type() ==`, type hints, PEP 8) to the `.py` files in the diff. Runs `ruff check --extend-select C901 <diff-files>` and `pyright` — dedup with Phase 1: report only what the integrity gate doesn't catch (idioms and smells that lint doesn't pick up). For any `C901` hit, name the offending function and the branch structure driving the count — the fix is splitting it, never raising the threshold.
 
 #### R5 — MCP Tool Contract `[mcp-tool-contract-reviewer · sonnet · conditional]`
 
@@ -352,7 +353,7 @@ Script missing → `⚪` and move on. Return: ✅/❌ status per script + **only
 **Inputs:** score ≥ 45 (Phase 3) + ❌ R1 gaps + broken R5 contract + medium security (CVSS 4.0–6.9) + ❌ OWASP checklist items + Phase 1/R10 failures (once collected).
 
 - Group by domain **and by file** — never 2 agents on the same file. Route via the Protocol (top of this document); fallback `orchestrator`. All in the same message.
-- Each fixer: applies the fix → scoped verification (`OBSIDIAN_VAULT_PATH=$(mktemp -d) pytest <scope>` / `ruff check <files>` / `pyright <files>`) → reports the applied diff.
+- Each fixer: applies the fix → quick check on its own files (`OBSIDIAN_VAULT_PATH=$(mktemp -d) pytest <scope>` / `ruff check <files>` / `pyright <files>`; the whole-tree gate runs in Phase 5) → reports the applied diff.
 - **🚨 Critical (CVSS ≥ 7.0): blocks the report.** Fix via `security-reviewer` → **re-run R3 in full** → only unblocks with zero criticals.
 - Medium security and ❌ checklist: confirmed fix mandatory before the report.
 - Main agent only validates the fixers' completion — NEVER fixes.
@@ -364,11 +365,11 @@ Script missing → `⚪` and move on. Return: ✅/❌ status per script + **only
 ## Phase 5 — Final Gate + Report `[SEQUENTIAL · main agent]`
 
 1. **Collect Phase 1** (wait if still running). Failure → fix via domain subagents (Phase 4) → re-run the failing command until exit 0.
-2. **Any fix applied in any phase?** → re-run `ruff check --extend-select C901 <changed files> && pyright <changed files> && OBSIDIAN_VAULT_PATH=$(mktemp -d) pytest`. **No fix** → Phase 1 results stand; don't re-run.
+2. **Any fix applied in any phase?** → re-run `ruff check obsidian_mcp tests && ruff check --extend-select C901 <changed files> && pyright && OBSIDIAN_VAULT_PATH=$(mktemp -d) pytest`. **No fix** → Phase 1 results stand; don't re-run.
 3. Residual error → NEVER inline → dispatch via the Protocol → repeat the cycle.
 4. Issue the report **only** with lint, typecheck, and tests green **confirmed by the main agent**.
 
-> **Sign-off ≠ assumption (turn-boundary).** Lint, typecheck, and tests ALWAYS end up green — no exception (the "Compilation Errors" rule from the root `CLAUDE.md`), scoped to the files changed in the session. Critical/medium security NEVER has a sign-off path — always fix it (BLOCKER at the end of this section). For the remaining findings with score ≥ 45 that a specialist fixer reports as unsafe or genuinely out of scope to fix automatically: the alternative path is "explicit user sign-off" — valid **only** when the user has already waived that exact finding in a real message from them, quoted verbatim in the report. The command **never** assumes, infers from silence, or simulates this sign-off to unblock the report. No safe fix possible **and** no real sign-off: issue the report with the item marked `⏸️ PENDING — awaiting user decision` and **end the turn** — the user's response only arrives in a future turn, never this one; never proceed as if the sign-off had been given.
+> **Sign-off ≠ assumption (turn-boundary).** Lint, typecheck, and tests ALWAYS end up green — no exception (the "Compilation Errors" rule from the root `CLAUDE.md`). Critical/medium security NEVER has a sign-off path — always fix it (BLOCKER at the end of this section). For the remaining findings with score ≥ 45 that a specialist fixer reports as unsafe or genuinely out of scope to fix automatically: the alternative path is "explicit user sign-off" — valid **only** when the user has already waived that exact finding in a real message from them, quoted verbatim in the report. The command **never** assumes, infers from silence, or simulates this sign-off to unblock the report. No safe fix possible **and** no real sign-off: issue the report with the item marked `⏸️ PENDING — awaiting user decision` and **end the turn** — the user's response only arrives in a future turn, never this one; never proceed as if the sign-off had been given.
 
 ### Final Report
 
@@ -378,9 +379,9 @@ Script missing → `⚪` and move on. Return: ✅/❌ status per script + **only
 ### 🛡️ Integrity (Phase 1 + Phase 5)
 
 | Check                              | Status | Action |
-| Lint (ruff, changed files)         | ✅/❌    |        |
+| Lint (ruff, whole tree)            | ✅/❌    |        |
 | Complexity (ruff C901, changed files) | ✅/❌ | |
-| Typecheck (pyright, changed files) | ✅/❌    |        |
+| Typecheck (pyright, whole tree)    | ✅/❌    |        |
 | Tests (pytest)                     | ✅/❌    |        |
 
 ### 📐 Spec/Issue/Plan Compliance (R1)

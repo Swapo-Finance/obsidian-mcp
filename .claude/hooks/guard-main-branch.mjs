@@ -88,11 +88,11 @@ const onMain = MAIN_BRANCHES.test(branch);
 const REFSPEC = /^\+?(?:[^:\s]*:)?(?:refs\/heads\/)?(main|master)$/;
 
 /** @returns {string} the matched branch name, or "" */
-function pushTarget() {
-  if (!isPush || !verbMatch) return "";
+function pushTarget(match = verbMatch) {
+  if (match?.[1] !== "push") return "";
   // `)` and a backtick close a substitution — without them the last token of
   // `$(git push origin main)` is `main)`, which no refspec pattern matches.
-  const after = stripped.slice(verbMatch.index + verbMatch[0].length).split(/[;&|\n)`]/)[0];
+  const after = stripped.slice(match.index + match[0].length).split(/[;&|\n)`]/)[0];
   for (const token of after.split(/\s+/)) {
     const m = token && REFSPEC.exec(token);
     if (m) return m[1];
@@ -103,6 +103,30 @@ const pushTargetBranch = pushTarget();
 const pushTargetsMain = pushTargetBranch !== "";
 
 if (!onMain && !pushTargetsMain) process.exit(0);
+
+// `branch` foi lido ANTES do comando rodar: em `git checkout -b x && git commit`
+// o commit cai em `x`, não em main. Só vale a troca que cria um branch que não é
+// main/master e que se liga ao verbo apenas por `&&`: com `;`, `|`, `||`, `&` ou
+// quebra de linha o verbo roda mesmo que a troca falhe, e uma troca depois do
+// verbo chega tarde. Nome entre aspas ou vindo de variável não dá para verificar
+// e continua bloqueado.
+const SWITCH_TO_NEW = /\bgit\b[^;&|\n]*?[ \t](?:checkout[ \t]+-[bB]|switch[ \t]+-[cC])[ \t]+(\S+)/g;
+
+/** @returns {boolean} */
+function leavesMainBeforeVerb() {
+  const sw = [...stripped.matchAll(SWITCH_TO_NEW)]
+    .filter((m) => m.index + m[0].length <= verbMatch.index)
+    .pop();
+  if (!sw || !/^[\w./-]+$/.test(sw[1]) || MAIN_BRANCHES.test(sw[1])) return false;
+  const between = stripped.slice(sw.index + sw[0].length, verbMatch.index);
+  return !/[;&|\n]/.test(between.replace(/&&\s*/g, ""));
+}
+
+// Push para main é direto qualquer que seja o branch atual, então vale para todo
+// `git push` da cadeia, não só para o primeiro verbo.
+const pushesToMain = [...stripped.matchAll(new RegExp(GIT_VERB, "g"))].some((m) => pushTarget(m) !== "");
+
+if (!pushesToMain && leavesMainBeforeVerb()) process.exit(0);
 
 const verb = isCommit ? "commit" : "push";
 // Name the refspec when that is what triggered the block, so the message points
