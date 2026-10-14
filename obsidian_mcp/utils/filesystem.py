@@ -11,7 +11,12 @@ from typing import Any
 
 import aiofiles
 
-from ..constants import ERROR_MESSAGES
+from ..constants import (
+    ERROR_MESSAGES,
+    READ_MAX_CHARS_DEFAULT,
+    READ_MAX_CHARS_MAX,
+    READ_MAX_CHARS_MIN,
+)
 from ..models import Note, NoteMetadata
 from .env import read_bool_env, read_choice_env, read_int_env
 from .frontmatter import extract_tags, normalize_frontmatter, parse_frontmatter
@@ -115,6 +120,23 @@ class ObsidianVault:
         self.append_headroom_lines = self._read_int_env(
             "OBSIDIAN_APPEND_HEADROOM_LINES", 100
         )
+        self.max_note_chars = self._read_int_env("OBSIDIAN_MAX_NOTE_CHARS", 40000)
+        # Default page size of read_note. Like any other invalid knob, a value
+        # out of range falls back to the default: config never crashes the boot.
+        read_max_chars = self._read_int_env(
+            "OBSIDIAN_READ_MAX_CHARS", READ_MAX_CHARS_DEFAULT
+        )
+        if not READ_MAX_CHARS_MIN <= read_max_chars <= READ_MAX_CHARS_MAX:
+            logger.warning(
+                "Invalid OBSIDIAN_READ_MAX_CHARS=%d; must be from %d to %d. "
+                "Falling back to %d.",
+                read_max_chars,
+                READ_MAX_CHARS_MIN,
+                READ_MAX_CHARS_MAX,
+                READ_MAX_CHARS_DEFAULT,
+            )
+            read_max_chars = READ_MAX_CHARS_DEFAULT
+        self.read_max_chars = read_max_chars
         self.cache_stat_ttl_seconds = self._read_int_env(
             "OBSIDIAN_CACHE_STAT_TTL_SECONDS", 30
         )
@@ -178,7 +200,8 @@ class ObsidianVault:
 
     def is_daily_note_path(self, relpath: str) -> bool:
         """True if relpath lives inside OBSIDIAN_DAILY_DIR — daily notes are
-        always exempt from OBSIDIAN_MAX_NOTE_LINES / _APPEND_HEADROOM_LINES."""
+        always exempt from the note-size policy (OBSIDIAN_MAX_NOTE_LINES,
+        _APPEND_HEADROOM_LINES, OBSIDIAN_MAX_NOTE_CHARS)."""
         if not self.daily_dir:
             return False
         return relpath == self.daily_dir or relpath.startswith(self.daily_dir + "/")

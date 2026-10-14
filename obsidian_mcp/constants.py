@@ -16,6 +16,21 @@ ENDPOINTS = {
 # File extensions
 MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 
+# read_note paging: the bounds of the max_chars parameter and of
+# OBSIDIAN_READ_MAX_CHARS, the default page size.
+READ_MAX_CHARS_DEFAULT = 40_000
+READ_MAX_CHARS_MIN = 1_000
+READ_MAX_CHARS_MAX = 1_000_000
+
+# Added to a paged read_note response when text remains after the page. Same
+# role as the "message" of a truncated search result.
+READ_TRUNCATED_MESSAGE = (
+    "Showing characters {start}-{next_offset} of {total_chars}. This page is only "
+    "part of the text. To read the next page, call read_note_tool again with "
+    "offset={next_offset}. To read one section, pass section with a heading from "
+    "outline. Read all pages before you replace the note with update_note."
+)
+
 # Error messages - Actionable and specific
 ERROR_MESSAGES = {
     "note_not_found": (
@@ -113,6 +128,36 @@ ERROR_MESSAGES = {
         "2) Check that OBSIDIAN_VAULT_PATH points at the vault folder, "
         "3) Retry once the folder is back"
     ),
+    "invalid_read_offset": (
+        "Invalid offset: {offset}. The offset must be 0 or more. "
+        "To fix: 1) Use offset=0 to read from the start of the note, "
+        "2) Use the next_offset value of the previous page"
+    ),
+    "invalid_read_max_chars": (
+        "Invalid max_chars: {max_chars}. The value must be from {minimum} to {maximum}. "
+        "To fix: 1) Use a value in that range, "
+        "2) Omit max_chars to use OBSIDIAN_READ_MAX_CHARS"
+    ),
+    "read_offset_out_of_range": (
+        "Offset {offset} is at or after the end of the text ({total_chars} characters) "
+        "in '{path}'. To fix: 1) Use the next_offset value of the previous page. "
+        "A null next_offset means that you already read the last page, "
+        "2) Use offset=0 to read from the start, "
+        "3) If the note changed after the previous page, read it again from offset=0"
+    ),
+    "section_not_found": (
+        "No section matches '{section}' in '{path}'. "
+        "To fix: 1) Give a markdown heading with its level, e.g. '## Tasks'. "
+        "Case does not matter, but the number of # marks must match, "
+        "2) Read the note without section to see its headings, "
+        "or use the outline of a paged read"
+    ),
+    "note_over_char_limit": (
+        "Note '{path}' would have {chars} characters, over "
+        "OBSIDIAN_MAX_NOTE_CHARS={limit}. "
+        "To fix: 1) Split the content into smaller notes and link them with [[wikilinks]], "
+        "2) Or raise OBSIDIAN_MAX_NOTE_CHARS"
+    ),
 }
 
 # Standardized response structures for reasoning-friendly consistency
@@ -176,6 +221,23 @@ RESPONSE_STRUCTURES = {
         "failed": int,  # Notes that could not be read or indexed
         "full": bool,  # Whether every note was re-indexed
         "duration_ms": int,  # Wall time of the pass
+    },
+    # Paged read (read_note_tool): offset > 0, or the text does not fit in one
+    # page. A read that fits from offset 0 keeps crud_success with details
+    # {content, metadata}.
+    "read_page": {
+        "success": True,
+        "path": str,  # The note path
+        "operation": str,  # "read"
+        "details": {
+            "content": str,  # This page of the note (or section) text
+            "metadata": dict,  # Same as an unpaged read
+            "truncated": bool,  # True when text remains after this page
+            "next_offset": int,  # Start of the next page; None on the last page
+            "total_chars": int,  # Length of the whole note (or section) text
+            "outline": list,  # [{heading, level, offset, chars}], 50 entries max
+            "message": str,  # Only when truncated: how to read the next page
+        },
     },
     # Error response
     "error": {
