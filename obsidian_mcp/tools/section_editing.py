@@ -13,6 +13,26 @@ from .link_management import validate_wikilinks_for_write
 from .write_policy import _serialize_note_writes, _size_policy_warning
 
 
+def _parse_heading(line: str) -> tuple[int, str] | None:
+    """(level, stripped text) of a markdown heading line, or None when the line
+    is not a heading. The one heading parser of edit_note_section and
+    read_note."""
+    match = re.match(r"^(#{1,6})\s+(.+)$", line)
+    if not match:
+        return None
+    return len(match.group(1)), match.group(2).strip()
+
+
+def _section_end(lines: list[str], start: int, level: int) -> int:
+    """Index of the first line after `start` that is a heading of `level` or a
+    higher level (fewer #), or len(lines) when the section runs to the end."""
+    for j in range(start + 1, len(lines)):
+        next_match = re.match(r"^(#{1,6})\s+", lines[j])
+        if next_match and len(next_match.group(1)) <= level:
+            return j
+    return len(lines)
+
+
 def _find_section_bounds(
     lines: list[str], heading_level: int, heading_text: str
 ) -> tuple[int, int] | None:
@@ -25,23 +45,12 @@ def _find_section_bounds(
     """
     normalized_target = unicodedata.normalize("NFC", heading_text.lower())
     for i, line in enumerate(lines):
-        line_match = re.match(r"^(#{1,6})\s+(.+)$", line)
-        if not line_match:
+        heading = _parse_heading(line)
+        if heading is None or heading[0] != heading_level:
             continue
-        line_level = len(line_match.group(1))
-        if line_level != heading_level:
+        if unicodedata.normalize("NFC", heading[1].lower()) != normalized_target:
             continue
-        line_text = line_match.group(2).strip()
-        if unicodedata.normalize("NFC", line_text.lower()) != normalized_target:
-            continue
-
-        section_end = len(lines)
-        for j in range(i + 1, len(lines)):
-            next_match = re.match(r"^(#{1,6})\s+", lines[j])
-            if next_match and len(next_match.group(1)) <= heading_level:
-                section_end = j
-                break
-        return i, section_end
+        return i, _section_end(lines, i, heading_level)
 
     return None
 
@@ -164,14 +173,12 @@ async def edit_note_section(
     content, warnings = await validate_wikilinks_for_write(vault, content)
 
     # Parse the section identifier to extract heading level and text
-    heading_match = re.match(r"^(#{1,6})\s+(.+)$", section_identifier)
-    if not heading_match:
+    heading = _parse_heading(section_identifier)
+    if heading is None:
         raise ValueError(
             f"Invalid section identifier: {section_identifier}. Must be a markdown heading (e.g., '## Section Name')"
         )
-
-    heading_level = len(heading_match.group(1))
-    heading_text = heading_match.group(2).strip()
+    heading_level, heading_text = heading
 
     # Find the section in the content
     lines = note_content.split("\n")

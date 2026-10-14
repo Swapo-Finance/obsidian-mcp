@@ -7,6 +7,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from .app import mcp
+from .constants import READ_MAX_CHARS_MAX, READ_MAX_CHARS_MIN
 from .tools import (
     create_note,
     delete_note,
@@ -32,6 +33,29 @@ async def read_note_tool(
             ],
         ),
     ],
+    offset: Annotated[
+        int,
+        Field(
+            description="Character offset where the page starts. Use 0 first, then the next_offset value of the previous page.",
+            ge=0,
+        ),
+    ] = 0,
+    max_chars: Annotated[
+        int | None,
+        Field(
+            description="Maximum characters in one page, from 1000 to 1000000. Omit it to use OBSIDIAN_READ_MAX_CHARS (default 40000). A page ends after the last line break that fits.",
+            ge=READ_MAX_CHARS_MIN,
+            le=READ_MAX_CHARS_MAX,
+        ),
+    ] = None,
+    section: Annotated[
+        str | None,
+        Field(
+            description="Markdown heading of one section to read (e.g., '## Tasks'). Matched like edit_note_section: case-insensitive, first match, sub-sections included. offset then counts from the heading line.",
+            pattern=r"^#{1,6}\s+.+$",
+            max_length=200,
+        ),
+    ] = None,
     ctx: Context | None = None,
 ):
     """
@@ -48,6 +72,13 @@ async def read_note_tool(
     - Getting only metadata (use get_note_info for efficiency)
     - Viewing images in a note (use view_note_images instead)
 
+    Long notes:
+    - A note longer than max_chars comes back in pages, with truncated, next_offset,
+      total_chars, outline, and message. Call again with offset=next_offset and the same
+      section, if you passed one, until it is null. Or read one part with section.
+    - A page is only part of the note. Read all pages before you replace the
+      note with update_note, or edit one section with edit_note_section.
+
     Returns:
         Note content and metadata including tags, aliases, and frontmatter.
         Image references (![alt](path)) are preserved in the content but images are not loaded.
@@ -57,7 +88,7 @@ async def read_note_tool(
     Then use view_note_images to load and analyze the images if requested.
     """
     try:
-        return await read_note(path, ctx)
+        return await read_note(path, offset, max_chars, section, ctx)
     except (ValueError, FileNotFoundError) as e:
         raise ToolError(str(e))
     except Exception as e:
